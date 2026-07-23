@@ -1,0 +1,26 @@
+# MAMCET Placement & Learning Portal - Sub-phase Task Checklist
+
+- `[x]` 1. Update Database Schema
+  - `[x]` Append `student_placements` table definition to `database/schema.sql`.
+  - `[x]` Implement silent self-migration check in `config/database.php` to auto-create the table.
+- `[x]` 2. Record Placements with LPA & Offer Letters
+  - `[x]` Update `admin/student-view.php` with a Placement Offers list and Form.
+  - `[x]` Add file uploading handler for offer letters (PDF/JPG/PNG) in `admin/student-view.php`.
+  - `[x]` Support deletion of placement records and automatic sync of placement status.
+- `[x]` 3. Enhance Admin & Officer Dashboard
+  - `[x]` Add Highest LPA, Average LPA, and Total Job Offers cards.
+  - `[x]` Add filter options: Willingness, Arrears Status (No Arrears / With Arrears).
+  - `[x]` Update database queries to apply filters.
+- `[x]` 4. Write Hostinger Hosting Guide
+  - `[x]` Create `HOSTING_GUIDE.md` detailing MySQL setups, file uploads, config updates, and permissions.
+- `[x]` 5. Bug Fixes & Diagnostics
+  - `[x]` Fix absolute project path redirection calculation inside `config/database.php`.
+  - `[x]` Fix global `foreach` loop closure compile-time syntax errors (`endcase;` -> `endforeach;`) in all 21 portal views.
+  - `[x]` Resolve circular login redirect loop (`ERR_TOO_MANY_REDIRECTS`) by centralizing session name settings inside `includes/auth.php` and removing default `session_start()` overrides in header and sidebar scripts.
+  - `[x]` Fix undefined `csrfInput()` function errors on Student Roster and Dataset Manager pages by including `csrf.php` inside the global header `includes/header.php`.
+  - `[x]` Fix SQL base table exception on Settings page by renaming invalid references of `system_settings` to `settings` in `admin/settings.php`.
+  - `[x]` Fix MariaDB reserved keyword compilation error during validation processes by wrapping unescaped `row_number` column fields in SQL backticks inside `api/validate-dataset.php`.
+  - `[x]` Fix missing `dept_id` column exception in `placement_officers` by adding `ALTER TABLE` auto-migration queries inside `config/database.php` and correcting the `database/schema.sql` template.
+  - `[x]` Fix undefined array key warning on Academic Sessions list by correcting invalid key mapping references from `is_current` to `is_active` in `admin/settings.php`.
+  - `[x]` Correct empty student CGPA display on Student Dashboard by left joining `student_academics` inside the `getActiveStudent` database query in `includes/auth.php`.
+  - `[x]` Implement academic records updating form and modal inside `admin/student-view.php` allowing Placement Officers to manually update student CGPA, backlogs count, and semester GPA details.

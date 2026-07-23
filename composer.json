@@ -1,0 +1,20 @@
+{
+    "name": "mamcet/placement-portal",
+    "description": "MAMCET College Placement and Learning Portal (Stage 1)",
+    "type": "project",
+    "require": {
+        "php": ">=8.0",
+        "phpoffice/phpspreadsheet": "^1.29"
+    },
+    "autoload": {
+        "psr-4": {
+            "MAMCET\\": "src/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "allow-plugins": {
+            "phpoffice/phpspreadsheet-inflector": true
+        }
+    }
+}
