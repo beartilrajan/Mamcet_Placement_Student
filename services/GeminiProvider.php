@@ -11,11 +11,17 @@ class GeminiProvider implements AIProviderInterface {
     private int $maxTokens;
 
     public function __construct(array $config = []) {
-        $this->apiKey = $config['api_key'] ?? '';
-        $this->model = $config['model_name'] ?? 'gemini-3.5-flash';
+        $key = trim($config['api_key'] ?? '');
+        $this->apiKey = $key;
+        $rawModel = trim($config['model_name'] ?? 'gemini-3.6-flash');
+        // Map legacy/discontinued models to gemini-3.6-flash
+        if (empty($rawModel) || strpos($rawModel, '1.5') !== false || strpos($rawModel, '2.5-flash') !== false) {
+            $rawModel = 'gemini-3.6-flash';
+        }
+        $this->model = $rawModel;
         $this->endpoint = $config['api_endpoint'] ?? 'https://generativelanguage.googleapis.com/v1beta/models/';
         $this->temperature = (float)($config['temperature'] ?? 0.20);
-        $this->maxTokens = (int)($config['max_tokens'] ?? 2048);
+        $this->maxTokens = (int)($config['max_tokens'] ?? 1024);
     }
 
     public function getProviderName(): string {
@@ -35,7 +41,7 @@ class GeminiProvider implements AIProviderInterface {
             throw new Exception("Gemini API key is not configured.");
         }
 
-        $url = rtrim($this->endpoint, '/') . '/' . $this->model . ':generateContent?key=' . $this->apiKey;
+        $url = rtrim($this->endpoint, '/') . '/' . $this->model . ':generateContent?key=' . urlencode($this->apiKey);
 
         $payload = [
             'contents' => [
@@ -71,10 +77,12 @@ class GeminiProvider implements AIProviderInterface {
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonData);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'Content-Type: application/json'
+            'Content-Type: application/json',
+            'x-goog-api-key: ' . $this->apiKey
         ]);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 12);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);

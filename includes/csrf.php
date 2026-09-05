@@ -44,6 +44,21 @@ function verifyCsrfRequest() {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!validateCsrfToken()) {
             http_response_code(403);
+            
+            // Check if request is AJAX or expects JSON response
+            $isAjax = (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest')
+                || (isset($_SERVER['HTTP_ACCEPT']) && strpos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false)
+                || (strpos($_SERVER['SCRIPT_NAME'] ?? '', '/api/') !== false);
+                
+            if ($isAjax) {
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Security token expired or invalid CSRF token. Please refresh the page and try again.'
+                ]);
+                exit;
+            }
+            
             die("CSRF validation failed. Security block triggered.");
         }
     }

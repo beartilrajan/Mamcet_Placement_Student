@@ -1,0 +1,19 @@
+# Composer dependencies
+/vendor/
+
+# Environment and database configuration
+/config/db_config.php
+/config/ai_config.php
+/config/mail_config.php
+
+# User uploads (ignore uploaded files but preserve directories and .gitkeep)
+/assets/uploads/*/*
+!/assets/uploads/*/.gitkeep
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.log

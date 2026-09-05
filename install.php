@@ -6,6 +6,7 @@ ini_set('display_errors', 1);
 
 session_start();
 
+
 $configFile = __DIR__ . '/config/db_config.php';
 $step = isset($_GET['step']) ? (int)$_GET['step'] : 1;
 
@@ -125,7 +126,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_step'])) {
                 'placement_email' => trim($_POST['placement_email'] ?? 'placement@mamcet.org'),
                 'placement_phone' => trim($_POST['placement_phone'] ?? '0431-2650500'),
                 'website_url' => trim($_POST['website_url'] ?? 'http://www.mamcet.org'),
-                'ai_api_key' => trim($_POST['ai_api_key'] ?? 'AIzaSyBtIc9T5aIjUojDeS4Dg7aB-h9_W-kRwUc')
+                'ai_api_key' => trim($_POST['ai_api_key'] ?? '')
             ];
             
             header("Location: install.php?step=4");
@@ -254,15 +255,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_step'])) {
                     }
 
                     // Save AI Settings into database
-                    $aiKey = $brand_info['ai_api_key'] ?? 'AIzaSyBtIc9T5aIjUojDeS4Dg7aB-h9_W-kRwUc';
+                    $aiKey = $brand_info['ai_api_key'] ?? '';
                     $pdo->exec("INSERT IGNORE INTO ai_providers (provider_id, provider_name, is_active) VALUES 
                         (1, 'gemini', 1),
                         (2, 'openai', 0)
                     ");
                     $stmtAi = $pdo->prepare("
                         INSERT INTO ai_settings (setting_id, provider_id, model_name, api_key, temperature, max_tokens) 
-                        VALUES (1, 1, 'gemini-1.5-flash', ?, 0.20, 2048)
-                        ON DUPLICATE KEY UPDATE api_key = VALUES(api_key)
+                        VALUES (1, 1, 'gemini-3.6-flash', ?, 0.20, 2048)
+                        ON DUPLICATE KEY UPDATE api_key = VALUES(api_key), model_name = 'gemini-3.6-flash'
                     ");
                     $stmtAi->execute([$aiKey]);
 
@@ -299,8 +300,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_step'])) {
                         'ai' => [
                             'active_provider' => 'gemini',
                             'gemini' => [
-                                'api_key' => $brand_info['ai_api_key'] ?? 'AIzaSyBtIc9T5aIjUojDeS4Dg7aB-h9_W-kRwUc',
-                                'model_name' => 'gemini-1.5-flash',
+                                'api_key' => $brand_info['ai_api_key'] ?? '',
+                                'model_name' => 'gemini-3.6-flash',
                                 'api_endpoint' => 'https://generativelanguage.googleapis.com/v1beta/models/',
                                 'temperature' => 0.20,
                                 'max_tokens' => 2048,
@@ -314,8 +315,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_step'])) {
                             ],
                             'limits' => [
                                 'daily_limit_per_student' => 3,
-                                'monthly_limit_per_student' => 10,
-                                'cooldown_seconds' => 60
+                                'monthly_limit_per_student' => 3,
+                                'cooldown_seconds' => 0
                             ]
                         ],
                         'smtp' => [
@@ -758,7 +759,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_step'])) {
                         <div class="card-body p-3">
                             <div class="mb-3">
                                 <label class="form-label">Google Gemini API Key</label>
-                                <input type="text" name="ai_api_key" class="form-control font-monospace" value="AIzaSyBtIc9T5aIjUojDeS4Dg7aB-h9_W-kRwUc" placeholder="Enter Gemini API key" required>
+                                <input type="text" name="ai_api_key" class="form-control font-monospace" value="" placeholder="Enter Gemini API key" required>
                                 <small class="text-muted">A valid API Key is required to run automated resume evaluations, ATS scores, and mock interview preparations.</small>
                             </div>
                         </div>

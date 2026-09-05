@@ -1,22 +1,29 @@
 <?php
-// MAMCET Placement & Learning Portal - Database Connection Manager
+// MAMCET Placement & Learning Portal - Centralized Database Connection Manager
 
 class Database {
     private static $instance = null;
     private $conn = null;
+    private $dsn = '';
+    private $user = '';
+    private $pass = '';
+    private $options = [];
 
     private function __construct() {
+        $this->initCredentials();
+        $this->connect();
+    }
+
+    private function initCredentials() {
         $configFile = __DIR__ . '/db_config.php';
         
         if (!file_exists($configFile)) {
-            // Configuration doesn't exist, redirect to installer if not already there
+            // Configuration doesn't exist, redirect to installer if present
             $requestUri = $_SERVER['REQUEST_URI'] ?? '';
-            if (strpos($requestUri, 'install.php') === false) {
-                // Determine root folder and redirect
+            if (strpos($requestUri, 'install.php') === false && file_exists(__DIR__ . '/../install.php')) {
                 $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
                 $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
                 
-                // Dynamically find project root URL path relative to server document root
                 $docRoot = str_replace('\\', '/', $_SERVER['DOCUMENT_ROOT']);
                 $projectRoot = str_replace('\\', '/', dirname(__DIR__));
                 
@@ -39,43 +46,33 @@ class Database {
         $port = $config['port'] ?? '3306';
         $charset = $config['charset'] ?? 'utf8mb4';
 
-        $dsn = "mysql:host=$host;dbname=$db;port=$port;charset=$charset";
+        $this->dsn = "mysql:host=$host;dbname=$db;port=$port;charset=$charset";
+        $this->user = $user;
+        $this->pass = $pass;
         
-        $options = [
+        $this->options = [
             PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES   => false,
+            PDO::ATTR_TIMEOUT            => 30, // 30 second connection timeout
         ];
+    }
 
+    private function connect() {
         try {
-            $this->conn = new PDO($dsn, $user, $pass, $options);
-            // Run automatic table migration check for student_placements
-            $this->conn->exec("
-                CREATE TABLE IF NOT EXISTS `student_placements` (
-                  `placement_id` INT AUTO_INCREMENT PRIMARY KEY,
-                  `student_id` INT NOT NULL,
-                  `company_name` VARCHAR(150) NOT NULL,
-                  `package_lpa` DECIMAL(5,2) NOT NULL,
-                  `offer_letter_path` VARCHAR(255) DEFAULT NULL,
-                  `placed_date` DATE DEFAULT NULL,
-                  `notes` TEXT DEFAULT NULL,
-                  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY (`student_id`) REFERENCES `students` (`student_id`) ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            ");
-            
-            // Run automatic table migration check for placement_officers.dept_id
-            $checkCol = $this->conn->query("SHOW COLUMNS FROM `placement_officers` LIKE 'dept_id'")->fetch();
-            if (!$checkCol) {
-                $this->conn->exec("
-                    ALTER TABLE `placement_officers` 
-                    ADD COLUMN `dept_id` INT DEFAULT NULL AFTER `mobile_number`,
-                    ADD CONSTRAINT `fk_officers_dept` FOREIGN KEY (`dept_id`) REFERENCES `departments` (`dept_id`) ON DELETE SET NULL
-                ");
+            $this->conn = new PDO($this->dsn, $this->user, $this->pass, $this->options);
+            // Configure session wait timeout to prevent MySQL from closing idle connections during long AI requests
+            try {
+                $this->conn->exec("SET SESSION wait_timeout = 300, interactive_timeout = 300");
+            } catch (\Throwable $t) {
+                // Ignore if session variables cannot be set on shared hosting
             }
         } catch (PDOException $e) {
+            error_log("Database connection failure: " . $e->getMessage());
+            
+            // If install.php exists and request is not already install.php, redirect to installer
             $requestUri = $_SERVER['REQUEST_URI'] ?? '';
-            if (strpos($requestUri, 'install.php') === false) {
+            if (strpos($requestUri, 'install.php') === false && file_exists(__DIR__ . '/../install.php')) {
                 $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
                 $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
                 $docRoot = str_replace('\\', '/', $_SERVER['DOCUMENT_ROOT']);
@@ -88,11 +85,13 @@ class Database {
                     session_start();
                 }
                 $_SESSION['db_connection_error'] = $e->getMessage();
-                
                 header("Location: " . $protocol . "://" . $host . $urlPath . "/install.php?error=db_conn");
                 exit;
             }
-            throw new PDOException("Database connection failed: " . $e->getMessage(), (int)$e->getCode());
+            
+            // On production where install.php is removed or database is busy, present clean error message instead of 500/redirect loop
+            http_response_code(500);
+            die("<div style='font-family:sans-serif;text-align:center;padding:50px;color:#1e293b;'><h2>Database Connection Error</h2><p style='color:#64748b;'>Unable to connect to the MySQL database server at this moment. Please verify your <code>config/db_config.php</code> credentials or try again in a few moments.</p><p style='font-size:12px;color:#94a3b8;'>Error: " . htmlspecialchars($e->getMessage()) . "</small></p></div>");
         }
     }
 
@@ -103,7 +102,37 @@ class Database {
         return self::$instance;
     }
 
-    public function getConnection() {
+    /**
+     * Check whether the current PDO connection is active.
+     */
+    public function isConnectionAlive(): bool {
+        if ($this->conn === null) {
+            return false;
+        }
+        try {
+            $this->conn->query("SELECT 1");
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Re-establish a fresh database connection.
+     */
+    public function reconnect(): PDO {
+        $this->conn = null;
+        $this->connect();
+        return $this->conn;
+    }
+
+    /**
+     * Get active connection, auto-reconnecting if the server closed the connection.
+     */
+    public function getConnection(): PDO {
+        if ($this->conn === null || !$this->isConnectionAlive()) {
+            $this->connect();
+        }
         return $this->conn;
     }
 }

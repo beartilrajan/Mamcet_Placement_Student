@@ -76,6 +76,7 @@ require_once(__DIR__ . '/../services/EligibilityService.php');
 <?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
 
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
             <h1 class="h3 mb-4 text-gray-800"><i class="fa-solid fa-user-shield text-primary"></i> Automated Eligibility Manager</h1>
 

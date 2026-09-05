@@ -20,12 +20,15 @@ CREATE TABLE IF NOT EXISTS `ai_settings` (
   `api_key` TEXT DEFAULT NULL,
   `temperature` DECIMAL(3,2) DEFAULT 0.20,
   `max_tokens` INT DEFAULT 2048,
-  `daily_limit` INT DEFAULT 50,
-  `monthly_limit` INT DEFAULT 500,
+  `daily_limit` INT DEFAULT 3,
+  `monthly_limit` INT DEFAULT 3,
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (`provider_id`) REFERENCES `ai_providers` (`provider_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Enforce the fixed student quota for installations that already have AI settings.
+UPDATE `ai_settings` SET `daily_limit` = 3, `monthly_limit` = 3;
 
 -- 3. AI Usage Logs table
 CREATE TABLE IF NOT EXISTS `ai_usage_logs` (
@@ -36,6 +39,7 @@ CREATE TABLE IF NOT EXISTS `ai_usage_logs` (
   `completion_tokens` INT DEFAULT 0,
   `model_name` VARCHAR(100) DEFAULT NULL,
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX `idx_student_created` (`student_id`, `created_at`),
   FOREIGN KEY (`student_id`) REFERENCES `students` (`student_id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -53,10 +57,10 @@ CREATE TABLE IF NOT EXISTS `prompt_templates` (
 CREATE TABLE IF NOT EXISTS `resume_files` (
   `resume_id` INT AUTO_INCREMENT PRIMARY KEY,
   `student_id` INT NOT NULL,
-  `original_filename` VARCHAR(255) NOT NULL,
-  `stored_filename` VARCHAR(100) NOT NULL UNIQUE,
-  `file_path` VARCHAR(255) NOT NULL,
-  `file_type` VARCHAR(10) NOT NULL,
+  `filename` VARCHAR(255) NOT NULL,
+  `stored_filename` VARCHAR(255) DEFAULT NULL,
+  `resume_path` VARCHAR(255) NOT NULL,
+  `file_type` VARCHAR(100) NOT NULL,
   `file_size` INT NOT NULL,
   `is_current` TINYINT(1) DEFAULT 0,
   `status` VARCHAR(20) DEFAULT 'uploaded',
@@ -85,6 +89,7 @@ CREATE TABLE IF NOT EXISTS `resume_extracted_text` (
   `text_hash` VARCHAR(64) NOT NULL,
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `idx_resume_text` (`resume_id`),
   FOREIGN KEY (`resume_id`) REFERENCES `resume_files` (`resume_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -234,10 +239,10 @@ CREATE TABLE IF NOT EXISTS `resume_job_matches` (
 CREATE TABLE IF NOT EXISTS `interview_question_sets` (
   `set_id` INT AUTO_INCREMENT PRIMARY KEY,
   `student_id` INT NOT NULL,
-  `resume_id` INT NOT NULL,
+  `resume_id` INT DEFAULT NULL,
   `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (`student_id`) REFERENCES `students` (`student_id`) ON DELETE CASCADE,
-  FOREIGN KEY (`resume_id`) REFERENCES `resume_files` (`resume_id`) ON DELETE CASCADE
+  FOREIGN KEY (`resume_id`) REFERENCES `resume_files` (`resume_id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 19. Interview Questions table

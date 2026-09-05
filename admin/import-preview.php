@@ -47,43 +47,71 @@ try {
 // Pre-detect auto mapping
 $autoMapped = ExcelHelper::autoMapColumns($excelHeaders);
 
+// Auto-detect and ensure academic session exists from Excel content or filename
+$detectedSessionId = 0;
+$detectedBatchId = 0;
+$newSessionNotice = '';
+
+if (!empty($allRows) && count($allRows) > 1) {
+    $sessIdx = $autoMapped['academic_session'] ?? -1;
+    $batchIdx = $autoMapped['batch_name'] ?? -1;
+
+    for ($r = 1; $r < min(count($allRows), 30); $r++) {
+        $row = $allRows[$r];
+        
+        // 1. Direct Academic Session column in Excel
+        if ($sessIdx >= 0 && !empty($row[$sessIdx])) {
+            $sRes = ensureAcademicSessionExists($db, $row[$sessIdx]);
+            if (!empty($sRes['session_id'])) {
+                $detectedSessionId = $sRes['session_id'];
+                if (!empty($sRes['is_new'])) {
+                    $newSessionNotice = "Automatically created new Academic Session: <strong>" . esc($sRes['session_name']) . "</strong> from file.";
+                }
+                break;
+            }
+        }
+
+        // 2. Inferred from Batch column in Excel
+        if ($batchIdx >= 0 && !empty($row[$batchIdx])) {
+            $sRes = ensureAcademicSessionExists($db, $row[$batchIdx]);
+            if (!empty($sRes['session_id'])) {
+                $detectedSessionId = $sRes['session_id'];
+                if (!empty($sRes['is_new'])) {
+                    $newSessionNotice = "Automatically created new Academic Session: <strong>" . esc($sRes['session_name']) . "</strong> based on student batch.";
+                }
+            }
+            if (empty($detectedBatchId)) {
+                $studentService = new StudentService($db);
+                $bId = $studentService->lookupBatchIdByName((string)$row[$batchIdx], (int)($fileRow['detected_dept_id'] ?? 0));
+                if ($bId > 0) $detectedBatchId = $bId;
+            }
+            if ($detectedSessionId > 0 && $detectedBatchId > 0) break;
+        }
+    }
+}
+
+// Fallback to checking filename
+if (empty($detectedSessionId) && !empty($fileRow['filename'])) {
+    $sRes = ensureAcademicSessionExists($db, $fileRow['filename']);
+    if (!empty($sRes['session_id'])) {
+        $detectedSessionId = $sRes['session_id'];
+        if (!empty($sRes['is_new'])) {
+            $newSessionNotice = "Automatically created new Academic Session: <strong>" . esc($sRes['session_name']) . "</strong> from file name.";
+        }
+    }
+}
+
 // Fetch academic sessions, batches, departments, sections
 $sessions = $db->query("SELECT * FROM academic_sessions ORDER BY start_year DESC")->fetchAll();
 $batches = $db->query("SELECT * FROM batches ORDER BY graduation_year DESC")->fetchAll();
 $departments = $db->query("SELECT dept_id, dept_code, dept_name FROM departments ORDER BY dept_code")->fetchAll();
 $sections = $db->query("SELECT s.*, d.dept_code FROM sections s JOIN departments d ON s.dept_id = d.dept_id ORDER BY d.dept_code, s.section_name")->fetchAll();
+
+$selectedSessionId = $detectedSessionId > 0 ? $detectedSessionId : ($activeSessionId ?? 1);
 ?>
 
 <div class="main-content">
-    <header class="top-navbar">
-        <div class="navbar-left">
-            <button class="sidebar-toggle"><i class="fa-solid fa-bars"></i></button>
-            <h4 class="mb-0 text-dark fw-bold">Excel Import Wizard</h4>
-        </div>
-        
-        <div class="navbar-right">
-            <div class="session-selector-container">
-                <span class="small text-muted fw-bold d-none d-md-inline">Active Session:</span>
-                <select class="session-selector-select" id="globalSessionSelector">
-                    <?php foreach ($allSessions as $s): ?>
-                        <option value="<?php echo $s['session_id']; ?>" <?php echo $s['session_id'] == $activeSessionId ? 'selected' : ''; ?>>
-                            <?php echo esc($s['session_name']); ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            
-            <div class="user-profile-dropdown">
-                <div class="user-profile-img text-center d-flex align-items-center justify-content-center bg-primary text-white" style="width:36px;height:36px;border-radius:50%;font-weight:bold;">
-                    <?php echo strtoupper(substr($_SESSION['username'] ?? 'U', 0, 1)); ?>
-                </div>
-                <div class="user-profile-info d-none d-md-flex">
-                    <span class="user-name"><?php echo esc($loggedInUser['display_name'] ?? 'User'); ?></span>
-                    <span class="user-role"><?php echo $_SESSION['role_id'] === 1 ? 'Super Admin' : 'Placement Officer'; ?></span>
-                </div>
-            </div>
-        </div>
-    </header>
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
 
     <div class="page-container">
         <!-- Wizard Status Tracker -->
@@ -108,6 +136,12 @@ $sections = $db->query("SELECT s.*, d.dept_code FROM sections s JOIN departments
 
         <?php if (!empty($error)): ?>
             <div class="alert alert-danger"><i class="fa-solid fa-triangle-exclamation me-2"></i> <?php echo esc($error); ?></div>
+        <?php endif; ?>
+        <?php if (!empty($newSessionNotice)): ?>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                <i class="fa-solid fa-sparkles text-primary me-2"></i> <?php echo $newSessionNotice; ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
         <?php endif; ?>
 
         <!-- STEP 1: CONFIGURATIONS PANEL -->
@@ -148,7 +182,7 @@ $sections = $db->query("SELECT s.*, d.dept_code FROM sections s JOIN departments
                         <label class="form-label fw-bold">Academic Session</label>
                         <select id="sel_session_id" class="form-select">
                             <?php foreach ($sessions as $s): ?>
-                                <option value="<?php echo $s['session_id']; ?>" <?php echo $s['session_id'] == $activeSessionId ? 'selected' : ''; ?>><?php echo esc($s['session_name']); ?></option>
+                                <option value="<?php echo $s['session_id']; ?>" <?php echo $s['session_id'] == $selectedSessionId ? 'selected' : ''; ?>><?php echo esc($s['session_name']); ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
@@ -157,7 +191,7 @@ $sections = $db->query("SELECT s.*, d.dept_code FROM sections s JOIN departments
                         <select id="sel_batch_id" class="form-select">
                             <option value="">Select Batch</option>
                             <?php foreach ($batches as $b): ?>
-                                <option value="<?php echo $b['batch_id']; ?>"><?php echo esc($b['batch_name']); ?></option>
+                                <option value="<?php echo $b['batch_id']; ?>" <?php echo $detectedBatchId > 0 && $b['batch_id'] == $detectedBatchId ? 'selected' : ''; ?>><?php echo esc($b['batch_name']); ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
@@ -224,7 +258,9 @@ $sections = $db->query("SELECT s.*, d.dept_code FROM sections s JOIN departments
                         'sem3_gpa' => ['label' => 'Semester 3 GPA', 'required' => false],
                         'sem4_gpa' => ['label' => 'Semester 4 GPA', 'required' => false],
                         'sem5_gpa' => ['label' => 'Semester 5 GPA', 'required' => false],
-                        'sem6_gpa' => ['label' => 'Semester 6 GPA', 'required' => false]
+                        'sem6_gpa' => ['label' => 'Semester 6 GPA', 'required' => false],
+                        'sem7_gpa' => ['label' => 'Semester 7 GPA', 'required' => false],
+                        'sem8_gpa' => ['label' => 'Semester 8 GPA', 'required' => false]
                     ];
                     
                     foreach ($fieldsToMap as $dbKey => $field):
@@ -338,7 +374,7 @@ $sections = $db->query("SELECT s.*, d.dept_code FROM sections s JOIN departments
                 <div class="d-flex justify-content-between">
                     <button class="btn btn-light border" onclick="backToStep2()"><i class="fa-solid fa-arrow-left me-1"></i> Back</button>
                     <div>
-                        <a href="dataset-manager.php" class="btn btn-outline-danger me-2">Cancel</a>
+                        <a href="students.php" class="btn btn-outline-danger me-2">Cancel</a>
                         <button class="btn btn-success btn-lg" id="btnExecuteImport" onclick="executeImport()">
                             <i class="fa-solid fa-cloud-arrow-up me-1"></i> Confirm & Import
                         </button>
@@ -362,7 +398,7 @@ $sections = $db->query("SELECT s.*, d.dept_code FROM sections s JOIN departments
                 
                 <div class="d-block">
                     <a href="students.php" class="btn btn-primary me-2">View Student Roster</a>
-                    <a href="dataset-manager.php" class="btn btn-outline-secondary">Go to Dataset Manager</a>
+                    <a href="student-import.php" class="btn btn-outline-secondary">Import Another File</a>
                 </div>
             </div>
         </div>

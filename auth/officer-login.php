@@ -112,8 +112,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
     <title>Officer Login - MAMCET Placement Portal</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -124,23 +128,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             display: flex;
             align-items: center;
             justify-content: center;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            padding: 16px;
         }
         .login-card {
             background: rgba(30, 41, 59, 0.85);
             backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 16px;
+            border-radius: 20px;
             width: 100%;
             max-width: 440px;
-            padding: 35px;
-            box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+            padding: 32px 28px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.3);
+        }
+        .login-header h3 {
+            font-family: 'Outfit', sans-serif;
+            font-weight: 700;
+            font-size: clamp(1.35rem, 4vw, 1.65rem);
         }
         .form-control {
             background-color: rgba(15, 23, 42, 0.6);
             border: 1px solid rgba(255, 255, 255, 0.1);
             color: #f8fafc;
-            padding: 12px;
+            padding: 12px 14px;
+            font-size: 16px; /* Prevents iOS auto-zoom */
+            border-radius: 10px;
         }
         .form-control:focus {
             background-color: rgba(15, 23, 42, 0.8);
@@ -153,17 +166,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border: none;
             padding: 12px;
             font-weight: 600;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
         }
         .btn-primary:hover {
             background-color: #1d4ed8;
+            transform: translateY(-1px);
         }
         .login-header {
             text-align: center;
-            margin-bottom: 30px;
+            margin-bottom: 24px;
         }
         .login-header i {
             color: #2563eb;
             margin-bottom: 12px;
+        }
+        @media (max-width: 575px) {
+            body {
+                padding: 12px;
+            }
+            .login-card {
+                padding: 24px 18px;
+                border-radius: 16px;
+            }
         }
     </style>
 </head>

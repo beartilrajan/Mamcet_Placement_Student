@@ -26,8 +26,12 @@ if (isLoggedIn()) {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
     <title>MAMCET Placement & Learning Portal</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Font Awesome -->
@@ -35,14 +39,15 @@ if (isLoggedIn()) {
     <style>
         body {
             background-color: #0f172a;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Plus Jakarta Sans', sans-serif;
             color: #f8fafc;
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
             position: relative;
-            overflow: hidden;
+            overflow-x: hidden;
+            padding: 24px 16px;
         }
         
         /* Decorative Background Elements */
@@ -55,6 +60,7 @@ if (isLoggedIn()) {
             top: -100px;
             right: -100px;
             z-index: 1;
+            pointer-events: none;
         }
         body::after {
             content: '';
@@ -65,29 +71,37 @@ if (isLoggedIn()) {
             bottom: -200px;
             left: -200px;
             z-index: 1;
+            pointer-events: none;
         }
 
         .portal-container {
             position: relative;
             z-index: 2;
-            max-width: 800px;
+            max-width: 820px;
             width: 100%;
-            padding: 20px;
+            padding: 10px;
         }
         .header-section {
             text-align: center;
-            margin-bottom: 40px;
+            margin-bottom: 35px;
         }
         .header-section i {
             color: #2563eb;
-            margin-bottom: 15px;
+            margin-bottom: 12px;
+            font-size: clamp(2.5rem, 6vw, 3.5rem);
+        }
+        .header-section h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: clamp(1.85rem, 5vw, 2.5rem);
+            font-weight: 800;
         }
         .portal-card {
             background: rgba(30, 41, 59, 0.7);
-            backdrop-filter: blur(12px);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 20px;
-            padding: 40px;
+            padding: 36px 30px;
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             height: 100%;
             display: flex;
@@ -98,19 +112,23 @@ if (isLoggedIn()) {
         .portal-card:hover {
             transform: translateY(-5px);
             border-color: #2563eb;
-            box-shadow: 0 10px 30px rgba(37, 99, 235, 0.15);
+            box-shadow: 0 12px 32px rgba(37, 99, 235, 0.2);
+        }
+        .portal-card h3 {
+            font-family: 'Outfit', sans-serif;
+            font-size: clamp(1.25rem, 3.5vw, 1.5rem);
         }
         .icon-box {
-            width: 70px;
-            height: 70px;
+            width: 68px;
+            height: 68px;
             border-radius: 50%;
             background: rgba(37, 99, 235, 0.1);
             color: #2563eb;
             display: flex;
             align-items: center;
             justify-content: center;
-            margin-bottom: 25px;
-            font-size: 1.75rem;
+            margin-bottom: 20px;
+            font-size: 1.65rem;
             transition: all 0.3s ease;
         }
         .portal-card:hover .icon-box {
@@ -120,10 +138,11 @@ if (isLoggedIn()) {
         }
         .btn-portal {
             margin-top: auto;
-            border-radius: 8px;
-            padding: 10px 24px;
+            border-radius: 10px;
+            padding: 12px 24px;
             font-weight: 600;
             width: 100%;
+            font-size: 0.95rem;
             transition: all 0.3s ease;
         }
         .btn-student {
@@ -137,18 +156,34 @@ if (isLoggedIn()) {
         }
         .btn-officer {
             background: transparent;
-            border: 2px solid rgba(255,255,255,0.15);
+            border: 2px solid rgba(255,255,255,0.2);
             color: white;
         }
         .btn-officer:hover {
-            background: rgba(255,255,255,0.05);
+            background: rgba(255,255,255,0.08);
             border-color: white;
         }
         .footer-text {
             text-align: center;
-            margin-top: 50px;
+            margin-top: 40px;
             font-size: 0.8rem;
             color: #64748b;
+        }
+
+        @media (max-width: 767px) {
+            body {
+                padding: 20px 12px;
+            }
+            .portal-container {
+                padding: 0;
+            }
+            .portal-card {
+                padding: 26px 20px;
+                border-radius: 16px;
+            }
+            .header-section {
+                margin-bottom: 25px;
+            }
         }
     </style>
 </head>

@@ -1,6 +1,10 @@
 <?php
 // MAMCET Placement & Learning Portal - Authentication & Session Helper
 
+if (!ob_get_level()) {
+    ob_start();
+}
+
 if (session_status() === PHP_SESSION_NONE) {
     $config = require(__DIR__ . '/../config/app.php');
     $sessionConfig = $config['session'] ?? [];
@@ -94,13 +98,16 @@ function getActiveStudent($db = null) {
         return null;
     }
     
+    require_once(__DIR__ . '/../config/database.php');
+    
     if ($db === null) {
-        require_once(__DIR__ . '/../config/database.php');
         $db = Database::getInstance()->getConnection();
     }
     
-    $stmt = $db->prepare("
-        SELECT s.*, sa.current_cgpa, sa.standing_arrears, sa.history_of_arrears, b.batch_name, d.dept_name, d.dept_code, pr.programme_name, sec.section_name 
+    $query = "
+        SELECT s.*, sa.current_cgpa, sa.standing_arrears, sa.history_of_arrears, 
+               b.batch_name, b.admission_year AS batch_admission_year, b.graduation_year AS batch_graduation_year, b.programme_duration,
+               d.dept_name, d.dept_code, pr.programme_name, pr.duration_years, sec.section_name 
         FROM students s 
         JOIN batches b ON s.batch_id = b.batch_id 
         JOIN departments d ON s.dept_id = d.dept_id
@@ -108,9 +115,24 @@ function getActiveStudent($db = null) {
         LEFT JOIN programmes pr ON b.programme_id = pr.programme_id
         LEFT JOIN sections sec ON s.section_id = sec.section_id
         WHERE s.user_id = ?
-    ");
-    $stmt->execute([$_SESSION['user_id']]);
-    return $stmt->fetch();
+    ";
+
+    try {
+        $stmt = $db->prepare($query);
+        $stmt->execute([$_SESSION['user_id']]);
+        return $stmt->fetch();
+    } catch (\Throwable $e) {
+        // In case of MySQL timeout (server has gone away) during long AI calls, reconnect and retry once
+        try {
+            $freshDb = Database::getInstance()->reconnect();
+            $stmt = $freshDb->prepare($query);
+            $stmt->execute([$_SESSION['user_id']]);
+            return $stmt->fetch();
+        } catch (\Throwable $retryEx) {
+            error_log("getActiveStudent error after retry: " . $retryEx->getMessage());
+            return null;
+        }
+    }
 }
 
 /**

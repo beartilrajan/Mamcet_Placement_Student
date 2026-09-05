@@ -51,6 +51,7 @@ $readinessList = $stmtSt->fetchAll();
 <?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
 
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
             <h1 class="h3 mb-4 text-gray-800"><i class="fa-solid fa-star text-warning"></i> Candidates Readiness Scoring</h1>
 
@@ -126,7 +127,7 @@ $readinessList = $stmtSt->fetchAll();
                                                 </div>
                                             </td>
                                             <td>
-                                                <a href="student-view.php?id=<?php echo $row['student_id']; ?>" class="btn btn-sm btn-outline-info">
+                                                <a href="student-view.php?student_id=<?php echo $row['student_id']; ?>" class="btn btn-sm btn-outline-info">
                                                     <i class="fa-solid fa-user"></i> View Profile
                                                 </a>
                                             </td>

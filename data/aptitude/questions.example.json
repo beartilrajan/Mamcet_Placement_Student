@@ -1,0 +1,19 @@
+{
+  "questions": [
+    {
+      "question_id": 1001,
+      "category": "Quantitative Aptitude",
+      "question_text": "If a train travels 120 km in 2 hours, what is its average speed?",
+      "option_a": "40 km/h",
+      "option_b": "50 km/h",
+      "option_c": "60 km/h",
+      "option_d": "80 km/h",
+      "correct_option": "C",
+      "explanation": "Average speed is distance divided by time: 120 / 2 = 60 km/h.",
+      "difficulty": "Easy",
+      "topic": "Speed, Time & Distance",
+      "company_tag": "TCS, Infosys, Wipro",
+      "is_active": true
+    }
+  ]
+}

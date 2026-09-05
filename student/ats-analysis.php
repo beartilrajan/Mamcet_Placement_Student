@@ -42,11 +42,53 @@ if ($currentResume) {
     }
 }
 
+require_once(__DIR__ . '/../services/JobSeederService.php');
+JobSeederService::seedIfEmpty($db);
+$stmtJobs = $db->query("SELECT job_id, company_name, job_title FROM job_descriptions WHERE status = 'published' OR status IS NULL OR status = '' OR status = 'draft' ORDER BY job_id DESC");
+$availableJobs = $stmtJobs ? $stmtJobs->fetchAll() : [];
+
 // Handle trigger analysis POST
 if (isset($_POST['trigger_analysis']) && $currentResume) {
     try {
-        require_once(__DIR__ . '/../services/AIService.php');
-        require_once(__DIR__ . '/../services/ATSScoringService.php');
+        if (!class_exists('AIService')) {
+            $aiServicePaths = [
+                __DIR__ . '/../services/AIService.php',
+                dirname(__DIR__) . '/services/AIService.php',
+                realpath(__DIR__ . '/../services/AIService.php')
+            ];
+            foreach ($aiServicePaths as $path) {
+                if ($path && file_exists($path)) {
+                    require_once($path);
+                    break;
+                }
+            }
+            if (!class_exists('AIService')) {
+                @include_once(__DIR__ . '/../services/AIService.php');
+            }
+            if (!class_exists('AIService')) {
+                throw new Exception("Service file 'AIService.php' is missing from the services/ directory on your server. Please upload the 'services/' folder to your server.");
+            }
+        }
+
+        if (!class_exists('ATSScoringService')) {
+            $atsServicePaths = [
+                __DIR__ . '/../services/ATSScoringService.php',
+                dirname(__DIR__) . '/services/ATSScoringService.php',
+                realpath(__DIR__ . '/../services/ATSScoringService.php')
+            ];
+            foreach ($atsServicePaths as $path) {
+                if ($path && file_exists($path)) {
+                    require_once($path);
+                    break;
+                }
+            }
+            if (!class_exists('ATSScoringService')) {
+                @include_once(__DIR__ . '/../services/ATSScoringService.php');
+            }
+            if (!class_exists('ATSScoringService')) {
+                throw new Exception("Service file 'ATSScoringService.php' is missing from the services/ directory on your server. Please upload the 'services/' folder to your server.");
+            }
+        }
 
         $resumeId = (int)$currentResume['resume_id'];
         $text = $currentResume['extracted_text'];
@@ -55,14 +97,31 @@ if (isset($_POST['trigger_analysis']) && $currentResume) {
             throw new Exception("Your resume does not contain any extractable text yet. Please go to 'My Resume' and verify text first.");
         }
 
-        // 1. Verify daily and monthly API quotas
-        $limitCheck = AIService::checkStudentLimits($db, $studentId);
+        // 1. Verify daily and monthly API quotas for ATS Resume Scan
+        $limitCheck = AIService::checkStudentLimits($db, $studentId, 'ats');
         if (!$limitCheck['allowed']) {
             throw new Exception($limitCheck['reason']);
         }
 
-        // 2. Perform Hybrid ATS Scoring
-        $analysisResults = ATSScoringService::analyze($text, $studentId, $db);
+        // 2. Determine target evaluation mode (General by default)
+        $targetJobId = isset($_POST['target_job_id']) ? (int)$_POST['target_job_id'] : 0;
+        $jdText = null;
+        if ($targetJobId > 0) {
+            $stmtJd = $db->prepare("SELECT * FROM job_descriptions WHERE job_id = ?");
+            $stmtJd->execute([$targetJobId]);
+            $jd = $stmtJd->fetch();
+            if ($jd) {
+                $jdText = "Company: " . ($jd['company_name'] ?? '') . "\nRole: " . ($jd['job_title'] ?? '') . "\nRequired Skills: " . ($jd['required_skills'] ?? '') . "\nSummary: " . ($jd['job_summary'] ?? '') . "\nResponsibilities: " . ($jd['responsibilities'] ?? '');
+            }
+        }
+
+        // 3. Perform Hybrid ATS Compatibility Scoring
+        $analysisResults = ATSScoringService::analyze($text, $jdText, $studentId, $db);
+
+        // Refresh DB connection after external AI request
+        if (class_exists('Database')) {
+            $db = Database::getInstance()->getConnection();
+        }
 
         // 3. Save to database
         $db->beginTransaction();
@@ -119,10 +178,13 @@ if (isset($_POST['trigger_analysis']) && $currentResume) {
         $stmtSec->execute([$analysisId]);
         $sectionScores = $stmtSec->fetchAll();
 
-        $message = "ATS Compatibility Analysis completed successfully!";
+        $message = !empty($jdText) ? "Contextual Job Match & ATS Analysis completed successfully!" : "ATS Compatibility Analysis completed successfully!";
     } catch (Exception $e) {
-        if ($db->inTransaction()) $db->rollBack();
+        if (isset($db) && $db->inTransaction()) {
+            $db->rollBack();
+        }
         $error = $e->getMessage();
+        $db = Database::getInstance()->getConnection();
     }
 }
 
@@ -145,25 +207,76 @@ if ($latestAnalysis) {
         $scoreColor = 'warning';
     }
 }
+
+// Student AI Quota status for ATS Resume Analysis
+require_once(__DIR__ . '/../services/AIService.php');
+$quotaInfo = AIService::checkStudentLimits($db, $studentId, 'ats');
 ?>
 
 <?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
 
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <h1 class="h3 mb-0 text-gray-800"><i class="fa-solid fa-gauge-high text-info"></i> ATS Resume Score Estimator</h1>
-                <?php if ($latestAnalysis): ?>
-                    <button onclick="window.print()" class="btn btn-outline-secondary btn-sm d-print-none">
-                        <i class="fa-solid fa-print"></i> Download PDF / Print Report
-                    </button>
-                <?php endif; ?>
+            <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 gap-3">
+                <div>
+                    <h1 class="h3 mb-1 text-gray-800"><i class="fa-solid fa-gauge-high text-info"></i> ATS Resume Score Estimator</h1>
+                    <div class="mt-1"><?php echo AIService::renderQuotaBadge($quotaInfo); ?></div>
+                </div>
+                <div class="d-flex flex-column flex-sm-row align-items-stretch align-items-sm-center gap-2 w-100 w-md-auto">
+                    <?php if ($currentResume): ?>
+                        <form method="POST" class="d-flex flex-column flex-sm-row align-items-stretch align-items-sm-center gap-2 w-100 w-sm-auto mb-0" onsubmit="return <?php echo $quotaInfo['monthly_remaining'] > 0 ? "confirm('Notice: Running an ATS scan uses 1 of your " . $quotaInfo['monthly_limit'] . " monthly AI API calls (Remaining: " . $quotaInfo['monthly_remaining'] . "). Continue?')" : "false"; ?>;">
+                            <select class="form-select form-select-sm flex-grow-1" name="target_job_id" style="min-width: 0; font-size: 0.85rem;" title="Select ATS Scoring Standard" <?php echo $quotaInfo['monthly_remaining'] <= 0 ? 'disabled' : ''; ?>>
+                                <option value="0" selected>⚡ General ATS Standard (Default)</option>
+                                <?php if (!empty($availableJobs)): ?>
+                                    <optgroup label="Or Target Specific Job Drive">
+                                        <?php foreach ($availableJobs as $job): ?>
+                                            <option value="<?php echo $job['job_id']; ?>">
+                                                <?php echo htmlspecialchars($job['company_name'] . ' - ' . $job['job_title']); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </optgroup>
+                                <?php endif; ?>
+                            </select>
+                            <button type="submit" name="trigger_analysis" class="btn btn-primary btn-sm font-weight-bold shadow-sm text-nowrap" <?php echo $quotaInfo['monthly_remaining'] <= 0 ? 'disabled title="Monthly AI request limit reached (' . $quotaInfo['monthly_limit'] . '/' . $quotaInfo['monthly_limit'] . ' used)."' : ''; ?>>
+                                <i class="fa-solid fa-wand-magic-sparkles me-1"></i> Run ATS Scan
+                            </button>
+                        </form>
+                    <?php endif; ?>
+                    <?php if ($latestAnalysis): ?>
+                        <button onclick="window.print()" class="btn btn-outline-secondary btn-sm d-print-none text-nowrap">
+                            <i class="fa-solid fa-print me-1"></i> Print Report
+                        </button>
+                    <?php endif; ?>
+                </div>
             </div>
 
-            <!-- DISCLAIMER NOTICE (COMPULSORY CRITERIA) -->
-            <div class="alert alert-light border shadow-sm mb-4" role="alert" style="border-left: 5px solid #17a2b8 !important;">
-                <h6 class="font-weight-bold text-info"><i class="fa-solid fa-triangle-exclamation"></i> Important Notice</h6>
-                <small class="text-muted">This score is an estimated placement-readiness and ATS compatibility score. It is not an official score from any employer or recruitment platform. Different ATS search configurations prioritize keywords according to company-specific templates.</small>
+            <!-- Quota Status Banner / Live Countdown Timer -->
+            <?php echo AIService::renderQuotaBanner($quotaInfo); ?>
+
+            <?php if (!empty($message)): ?>
+                <div class="alert alert-success alert-dismissible fade show shadow-sm" role="alert">
+                    <i class="fa-solid fa-circle-check me-1"></i> <?php echo htmlspecialchars($message); ?>
+                    <div class="small mt-1 text-muted">
+                        <i class="fa-solid fa-bolt text-warning me-1"></i> AI Quota Status: <strong><?php echo $quotaInfo['monthly_used']; ?> of <?php echo $quotaInfo['monthly_limit']; ?> calls used</strong> this month (<?php echo $quotaInfo['monthly_remaining']; ?> remaining). Next reset: in <?php echo $quotaInfo['days_until_reset']; ?> days (<?php echo $quotaInfo['reset_date_formatted']; ?>).
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            <?php endif; ?>
+
+            <?php if (!empty($error)): ?>
+                <div class="alert alert-danger alert-dismissible fade show shadow-sm" role="alert">
+                    <i class="fa-solid fa-triangle-exclamation me-1"></i> <?php echo htmlspecialchars($error); ?>
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            <?php endif; ?>
+
+            <!-- Disclaimer Notice -->
+            <div class="alert alert-info bg-light-subtle py-2 px-3 mb-3 d-flex align-items-center gap-2 small shadow-sm border-0 border-start border-4 border-info" role="alert">
+                <i class="fa-solid fa-circle-info text-info flex-shrink-0"></i>
+                <div class="text-secondary">
+                    <strong class="text-dark">Disclaimer:</strong> Estimated score for preparation only — not an official employer or ATS rating.
+                </div>
             </div>
 
             <?php if (!empty($message)): ?>
@@ -192,14 +305,29 @@ if ($latestAnalysis) {
             <?php else: ?>
                 
                 <?php if (!$latestAnalysis): ?>
-                    <div class="card shadow py-5 text-center text-muted mb-4">
+                    <div class="card shadow py-5 text-center text-muted mb-4 border-0">
                         <div class="card-body">
                             <i class="fa-solid fa-laptop-code fa-3x mb-3 text-info"></i>
-                            <h5>Resume Scan Ready</h5>
-                            <p>Verify your details and run the ATS parser scan. This checks formatting, section tags, skills mapping, and evaluates writing scores.</p>
-                            <form method="POST">
-                                <button type="submit" name="trigger_analysis" class="btn btn-primary btn-lg mt-3">
-                                    <i class="fa-solid fa-compass-drafting"></i> Analyze Resume
+                            <h5 class="text-dark font-weight-bold">Resume Scan Ready</h5>
+                            <p class="mb-3">Your extracted resume text is ready for full AI ATS evaluation and qualitative scoring.</p>
+                            <form method="POST" class="d-inline-block text-start" style="max-width: 420px; width: 100%;">
+                                <div class="mb-3">
+                                    <label class="form-label small font-weight-bold text-muted">Target Evaluation:</label>
+                                    <select class="form-select" name="target_job_id">
+                                        <option value="0" selected>⚡ General ATS Standard (Default)</option>
+                                        <?php if (!empty($availableJobs)): ?>
+                                            <optgroup label="Target Specific Job Role">
+                                                <?php foreach ($availableJobs as $job): ?>
+                                                    <option value="<?php echo $job['job_id']; ?>">
+                                                        <?php echo htmlspecialchars($job['company_name'] . ' - ' . $job['job_title']); ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </optgroup>
+                                        <?php endif; ?>
+                                    </select>
+                                </div>
+                                <button type="submit" name="trigger_analysis" class="btn btn-primary btn-lg font-weight-bold shadow-sm w-100">
+                                    <i class="fa-solid fa-wand-magic-sparkles me-1"></i> Run Full ATS Scan Now
                                 </button>
                             </form>
                         </div>
@@ -214,26 +342,39 @@ if ($latestAnalysis) {
                                 <div class="card-header bg-dark text-white py-3">
                                     <h6 class="m-0 font-weight-bold">ATS Scorecard Summary</h6>
                                 </div>
-                                <div class="card-body py-5">
+                                <div class="card-body py-3 py-md-4">
                                     <!-- Circular Progress Gauge -->
-                                    <div class="d-inline-flex position-relative mb-4 align-items-center justify-content-center" style="width: 140px; height: 140px;">
-                                        <div class="position-absolute" style="font-size: 2.2rem; font-weight: 800; color: #36b9cc;">
-                                            <?php echo $latestAnalysis['overall_score']; ?><small style="font-size:0.9rem; font-weight:400; color:#aaa;">/100</small>
+                                    <div class="gauge-score-wrap mb-3" style="width: 140px; height: 140px;">
+                                        <div class="gauge-score-text" style="color: #06b6d4;">
+                                            <span class="gauge-score-val"><?php echo $latestAnalysis['overall_score']; ?></span><span class="gauge-score-max">/100</span>
                                         </div>
-                                        <svg class="w-100 h-100" style="transform: rotate(-90deg);">
-                                            <circle cx="70" cy="70" r="60" stroke="#f3f3f3" stroke-width="12" fill="transparent"/>
-                                            <circle cx="70" cy="70" r="60" stroke="#36b9cc" stroke-width="12" fill="transparent"
-                                                    stroke-dasharray="377" stroke-dashoffset="<?php echo 377 - (377 * $latestAnalysis['overall_score'] / 100); ?>"/>
+                                        <svg class="w-100 h-100" viewBox="0 0 150 150" style="transform: rotate(-90deg);">
+                                            <circle cx="75" cy="75" r="62" stroke="#f1f5f9" stroke-width="12" fill="transparent"/>
+                                            <circle cx="75" cy="75" r="62" stroke="#06b6d4" stroke-width="12" stroke-linecap="round" fill="transparent"
+                                                    stroke-dasharray="389.55" stroke-dashoffset="<?php echo 389.55 - (389.55 * (int)$latestAnalysis['overall_score'] / 100); ?>"/>
                                         </svg>
                                     </div>
-                                    <h4 class="font-weight-bold text-<?php echo $scoreColor; ?>"><?php echo $scoreTag; ?></h4>
-                                    <span class="text-muted d-block mt-2" style="font-size:0.8rem;">
+                                    <h4 class="font-weight-bold text-<?php echo $scoreColor; ?> mb-1"><?php echo $scoreTag; ?></h4>
+                                    <span class="text-muted d-block" style="font-size:0.78rem;">
                                         Last Analyzed: <?php echo date('d M Y, h:i A', strtotime($latestAnalysis['analyzed_at'])); ?>
                                     </span>
                                     
-                                    <form method="POST" class="mt-4">
-                                        <button type="submit" name="trigger_analysis" class="btn btn-outline-primary btn-block btn-sm d-print-none">
-                                            <i class="fa-solid fa-arrows-spin"></i> Re-analyze Resume
+                                    <form method="POST" class="mt-4 text-start">
+                                        <label class="form-label small font-weight-bold text-muted mb-1 d-print-none">Select Standard:</label>
+                                        <select class="form-select form-select-sm mb-2 d-print-none" name="target_job_id" style="font-size: 0.82rem;">
+                                            <option value="0" selected>⚡ General ATS Standard (Default)</option>
+                                            <?php if (!empty($availableJobs)): ?>
+                                                <optgroup label="Or Specific Job Opening">
+                                                    <?php foreach ($availableJobs as $job): ?>
+                                                        <option value="<?php echo $job['job_id']; ?>">
+                                                            <?php echo htmlspecialchars($job['company_name'] . ' - ' . $job['job_title']); ?>
+                                                        </option>
+                                                    <?php endforeach; ?>
+                                                </optgroup>
+                                            <?php endif; ?>
+                                        </select>
+                                        <button type="submit" name="trigger_analysis" class="btn btn-outline-primary btn-block btn-sm d-print-none w-100 font-weight-bold">
+                                            <i class="fa-solid fa-arrows-spin me-1"></i> Re-analyze Resume
                                         </button>
                                     </form>
                                 </div>
@@ -311,15 +452,15 @@ if ($latestAnalysis) {
                                 <div class="card-header bg-warning text-dark py-3">
                                     <h6 class="m-0 font-weight-bold"><i class="fa-solid fa-list-check"></i> Suggested Priority Actions</h6>
                                 </div>
-                                <div class="card-body">
+                                <div class="card-body p-0">
                                     <ul class="list-group list-group-flush">
                                         <?php 
                                         $actions = json_decode($latestAnalysis['priority_actions'], true) ?: [];
                                         foreach ($actions as $act): 
                                         ?>
-                                            <li class="list-group-item d-flex align-items-center py-2" style="font-size:0.9rem;">
-                                                <i class="fa-solid fa-square-check text-warning me-3"></i>
-                                                <?php echo htmlspecialchars($act); ?>
+                                            <li class="list-group-item d-flex align-items-start py-3 px-4" style="font-size:0.9rem; line-height: 1.5; word-break: break-word; overflow-wrap: anywhere;">
+                                                <i class="fa-solid fa-square-check text-warning me-3 mt-1 flex-shrink-0"></i>
+                                                <div class="text-dark"><?php echo htmlspecialchars($act); ?></div>
                                             </li>
                                         <?php endforeach; ?>
                                     </ul>
@@ -339,10 +480,10 @@ if ($latestAnalysis) {
                                                 $kw = json_decode($latestAnalysis['missing_keywords'], true) ?: [];
                                                 if (empty($kw)): 
                                                 ?>
-                                                    <span class="text-muted">Keywords are optimized.</span>
+                                                    <span class="text-muted small">Keywords are optimized.</span>
                                                 <?php else: ?>
                                                     <?php foreach ($kw as $k): ?>
-                                                        <span class="badge bg-light text-dark border p-2 m-1" style="font-size:0.8rem;"><i class="fa-solid fa-plus text-success"></i> <?php echo htmlspecialchars($k); ?></span>
+                                                        <span class="badge bg-light text-dark border p-2 text-wrap text-start fw-normal" style="font-size:0.82rem; line-height:1.4; word-break: break-word; overflow-wrap: anywhere; max-width: 100%;"><i class="fa-solid fa-plus text-success me-1"></i><?php echo htmlspecialchars($k); ?></span>
                                                     <?php endforeach; ?>
                                                 <?php endif; ?>
                                             </div>
@@ -355,15 +496,18 @@ if ($latestAnalysis) {
                                             <h6 class="m-0 font-weight-bold text-dark"><i class="fa-solid fa-pen-nib"></i> Suggested Action Verbs</h6>
                                         </div>
                                         <div class="card-body">
-                                            <div class="d-flex flex-wrap gap-2">
+                                            <div class="d-flex flex-column gap-2">
                                                 <?php 
                                                 $verbs = json_decode($latestAnalysis['action_verb_suggestions'], true) ?: [];
                                                 if (empty($verbs)): 
                                                 ?>
-                                                    <span class="text-muted">Good usage of active sentences detected.</span>
+                                                    <span class="text-muted small">Good usage of active sentences detected.</span>
                                                 <?php else: ?>
                                                     <?php foreach ($verbs as $v): ?>
-                                                        <span class="badge bg-light text-dark border p-2 m-1" style="font-size:0.8rem;"><i class="fa-solid fa-bolt text-warning"></i> <?php echo htmlspecialchars($v); ?></span>
+                                                        <div class="p-2 px-3 rounded bg-light border d-flex align-items-start gap-2" style="font-size:0.83rem; line-height: 1.45; word-break: break-word; overflow-wrap: anywhere;">
+                                                            <i class="fa-solid fa-bolt text-warning mt-1 flex-shrink-0"></i>
+                                                            <div class="text-dark"><?php echo htmlspecialchars($v); ?></div>
+                                                        </div>
                                                     <?php endforeach; ?>
                                                 <?php endif; ?>
                                             </div>

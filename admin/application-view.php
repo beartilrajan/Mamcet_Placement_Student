@@ -98,6 +98,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_stage'])) {
 <?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
 
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h1 class="h3 mb-0 text-gray-800"><i class="fa-solid fa-user-check text-primary"></i> Review Application</h1>

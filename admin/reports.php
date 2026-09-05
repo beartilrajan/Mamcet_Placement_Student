@@ -191,49 +191,33 @@ $allDepts = $db->query("SELECT * FROM departments ORDER BY dept_code")->fetchAll
 ?>
 
 <div class="main-content">
-    <header class="top-navbar">
-        <div class="navbar-left">
-            <button class="sidebar-toggle"><i class="fa-solid fa-bars"></i></button>
-            <h4 class="mb-0 text-dark fw-bold">Report Center</h4>
-        </div>
-        
-        <div class="navbar-right">
-            <div class="session-selector-container">
-                <span class="small text-muted fw-bold d-none d-md-inline">Active Session:</span>
-                <select class="session-selector-select" id="globalSessionSelector">
-                    <?php foreach ($allSessions as $s): ?>
-                        <option value="<?php echo $s['session_id']; ?>" <?php echo $s['session_id'] == $activeSessionId ? 'selected' : ''; ?>>
-                            <?php echo esc($s['session_name']); ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            
-            <div class="user-profile-dropdown">
-                <div class="user-profile-img text-center d-flex align-items-center justify-content-center bg-primary text-white" style="width:36px;height:36px;border-radius:50%;font-weight:bold;">
-                    <?php echo strtoupper(substr($_SESSION['username'] ?? 'U', 0, 1)); ?>
-                </div>
-                <div class="user-profile-info d-none d-md-flex">
-                    <span class="user-name"><?php echo esc($loggedInUser['display_name'] ?? 'User'); ?></span>
-                    <span class="user-role"><?php echo $_SESSION['role_id'] === 1 ? 'Super Admin' : 'Placement Officer'; ?></span>
-                </div>
-            </div>
-        </div>
-    </header>
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
 
     <div class="page-container">
         
+        <!-- Header -->
+        <div class="page-header">
+            <div>
+                <h1 class="page-title"><i class="fa-solid fa-file-chart-column text-primary me-2"></i>Placement Directory & Custom Reports</h1>
+                <p class="text-muted small mb-0 mt-1">Generate multi-parameter recruitment lists and export formatted CSV reports for employers.</p>
+            </div>
+            <button type="button" class="btn btn-sm btn-success shadow-sm" onclick="triggerCsvExport()">
+                <i class="fa-solid fa-file-csv me-1"></i> Export Filtered CSV
+            </button>
+        </div>
+
         <!-- EXPORT FILTERS CARD -->
         <div class="mamcet-card mb-4">
-            <div class="card-header bg-white py-3">
-                <h5 class="card-title fw-bold mb-0 text-dark"><i class="fa-solid fa-filter text-primary me-2"></i> Query Placement Directory</h5>
+            <div class="card-header">
+                <h6 class="card-title mb-0"><i class="fa-solid fa-filter text-primary me-2"></i>Query Placement Directory</h6>
+                <span class="badge bg-light text-muted border"><?php echo count($previewStudents); ?> Matches</span>
             </div>
             <div class="card-body">
                 <form action="reports.php" method="GET" id="queryForm">
                     <div class="row g-3">
                         <div class="col-md-3 col-6">
-                            <label class="form-label small text-muted">Department</label>
-                            <select name="dept_id" class="form-select">
+                            <label class="form-label">Department</label>
+                            <select name="dept_id" class="form-select form-select-sm">
                                 <option value="">All Departments</option>
                                 <?php foreach ($allDepts as $d): ?>
                                     <option value="<?php echo $d['dept_id']; ?>" <?php echo $deptId == $d['dept_id'] ? 'selected' : ''; ?>><?php echo esc($d['dept_code']); ?></option>
@@ -241,8 +225,8 @@ $allDepts = $db->query("SELECT * FROM departments ORDER BY dept_code")->fetchAll
                             </select>
                         </div>
                         <div class="col-md-3 col-6">
-                            <label class="form-label small text-muted">Batch</label>
-                            <select name="batch_id" class="form-select">
+                            <label class="form-label">Batch</label>
+                            <select name="batch_id" class="form-select form-select-sm">
                                 <option value="">All Batches</option>
                                 <?php foreach ($allBatches as $b): ?>
                                     <option value="<?php echo $b['batch_id']; ?>" <?php echo $batchId == $b['batch_id'] ? 'selected' : ''; ?>><?php echo esc($b['batch_name']); ?></option>
@@ -250,16 +234,16 @@ $allDepts = $db->query("SELECT * FROM departments ORDER BY dept_code")->fetchAll
                             </select>
                         </div>
                         <div class="col-md-3 col-6">
-                            <label class="form-label small text-muted">Willingness</label>
-                            <select name="placement_willingness" class="form-select">
+                            <label class="form-label">Willingness</label>
+                            <select name="placement_willingness" class="form-select form-select-sm">
                                 <option value="">All Statuses</option>
                                 <option value="Yes" <?php echo $willingness === 'Yes' ? 'selected' : ''; ?>>Willing Only</option>
                                 <option value="No" <?php echo $willingness === 'No' ? 'selected' : ''; ?>>Not Willing Only</option>
                             </select>
                         </div>
                         <div class="col-md-3 col-6">
-                            <label class="form-label small text-muted">Placement status</label>
-                            <select name="placement_status" class="form-select">
+                            <label class="form-label">Placement Status</label>
+                            <select name="placement_status" class="form-select form-select-sm">
                                 <option value="">All Statuses</option>
                                 <option value="Placed" <?php echo $status === 'Placed' ? 'selected' : ''; ?>>Placed</option>
                                 <option value="Unplaced" <?php echo $status === 'Unplaced' ? 'selected' : ''; ?>>Unplaced</option>
@@ -269,28 +253,32 @@ $allDepts = $db->query("SELECT * FROM departments ORDER BY dept_code")->fetchAll
                         </div>
                     </div>
 
-                    <div class="row g-3 mt-2">
+                    <div class="row g-3 mt-1">
                         <div class="col-md-3 col-6">
-                            <label class="form-label small text-muted">Minimum CGPA</label>
-                            <input type="number" step="0.01" name="min_cgpa" class="form-control" placeholder="e.g. 7.50" value="<?php echo esc($minCgpa); ?>">
+                            <label class="form-label">Minimum CGPA</label>
+                            <input type="number" step="0.01" name="min_cgpa" class="form-control form-control-sm" placeholder="e.g. 7.50" value="<?php echo esc($minCgpa); ?>">
                         </div>
                         <div class="col-md-3 col-6">
-                            <label class="form-label small text-muted">Max Standing Arrears</label>
-                            <input type="number" name="max_standing_arrears" class="form-control" placeholder="e.g. 0" value="<?php echo esc($maxArrears); ?>">
+                            <label class="form-label">Max Standing Arrears</label>
+                            <input type="number" name="max_standing_arrears" class="form-control form-control-sm" placeholder="e.g. 0" value="<?php echo esc($maxArrears); ?>">
                         </div>
                         <div class="col-md-3 col-6">
-                            <label class="form-label small text-muted">Skills keyword</label>
-                            <input type="text" name="skills_search" class="form-control" placeholder="e.g. Python, SQL" value="<?php echo esc($skills); ?>">
+                            <label class="form-label">Skills Keyword</label>
+                            <input type="text" name="skills_search" class="form-control form-control-sm" placeholder="e.g. Python, Java, SQL" value="<?php echo esc($skills); ?>">
                         </div>
                         <div class="col-md-3 col-6">
-                            <label class="form-label small text-muted">City / District</label>
-                            <input type="text" name="city_search" class="form-control" placeholder="e.g. Trichy" value="<?php echo esc($city); ?>">
+                            <label class="form-label">City / District</label>
+                            <input type="text" name="city_search" class="form-control form-control-sm" placeholder="e.g. Trichy, Chennai" value="<?php echo esc($city); ?>">
                         </div>
                     </div>
 
-                    <div class="text-end mt-4">
-                        <button type="submit" class="btn btn-outline-primary px-4"><i class="fa-solid fa-magnifying-glass me-1"></i> Preview Query</button>
-                        <button type="button" class="btn btn-success px-4" onclick="triggerCsvExport()"><i class="fa-solid fa-file-excel me-1"></i> Export formatted CSV</button>
+                    <div class="d-flex justify-content-end gap-2 mt-4 pt-2 border-top">
+                        <a href="reports.php" class="btn btn-sm btn-light border">
+                            <i class="fa-solid fa-rotate-left me-1"></i> Reset
+                        </a>
+                        <button type="submit" class="btn btn-sm btn-primary">
+                            <i class="fa-solid fa-magnifying-glass me-1"></i> Preview Query Results
+                        </button>
                     </div>
                 </form>
             </div>
@@ -298,41 +286,76 @@ $allDepts = $db->query("SELECT * FROM departments ORDER BY dept_code")->fetchAll
 
         <!-- QUERY PREVIEW RESULT TABLE -->
         <div class="mamcet-card">
-            <div class="card-header bg-white py-3">
-                <h5 class="card-title fw-bold mb-0"><i class="fa-solid fa-eye text-primary me-2"></i> Query Preview (Max 100 shown on screen)</h5>
+            <div class="card-header">
+                <h6 class="card-title mb-0"><i class="fa-solid fa-eye text-primary me-2"></i>Query Preview (Up to 100 students shown on screen)</h6>
+                <button type="button" class="btn btn-sm btn-outline-success" onclick="triggerCsvExport()">
+                    <i class="fa-solid fa-download me-1"></i> Download Complete CSV
+                </button>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
-                    <table class="table table-hover align-middle mb-0" id="previewTable" style="border: none;">
-                        <thead class="table-light">
+                    <table class="table align-middle mb-0" id="previewTable">
+                        <thead>
                             <tr>
-                                <th>Registration</th>
-                                <th>Name</th>
+                                <th class="ps-3">Registration & Student</th>
                                 <th>Dept / Batch</th>
                                 <th>CGPA</th>
                                 <th>Arrears</th>
-                                <th>Status / Willing</th>
-                                <th>City</th>
+                                <th>Placement Status</th>
+                                <th>City / District</th>
+                                <th class="text-end pe-3">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php if (empty($previewStudents)): ?>
                                 <tr>
-                                    <td colspan="7" class="text-center py-4 text-muted">No student records match the active query parameters.</td>
+                                    <td colspan="7" class="text-center py-5 text-muted">
+                                        <i class="fa-solid fa-filter-circle-xmark fa-2x mb-2 opacity-50"></i>
+                                        <p class="small mb-0">No student records match the active query parameters.</p>
+                                    </td>
                                 </tr>
                             <?php else: ?>
                                 <?php foreach ($previewStudents as $s): ?>
                                     <tr>
-                                        <td><a href="student-view.php?student_id=<?php echo $s['student_id']; ?>" class="fw-bold text-decoration-none"><?php echo esc($s['registration_number']); ?></a></td>
-                                        <td><span class="fw-bold text-dark"><?php echo esc($s['student_name']); ?></span></td>
-                                        <td><?php echo esc($s['dept_code']); ?> / <?php echo esc($s['batch_name']); ?></td>
-                                        <td><span class="fw-bold text-primary"><?php echo esc($s['current_cgpa'] ?? '0.00'); ?></span></td>
-                                        <td><span class="fw-bold text-<?php echo ($s['standing_arrears'] ?? 0) > 0 ? 'danger' : 'success'; ?>"><?php echo (int)($s['standing_arrears'] ?? 0); ?></span></td>
+                                        <td class="ps-3">
+                                            <a href="student-view.php?student_id=<?php echo $s['student_id']; ?>" class="fw-bold text-dark text-decoration-none d-block">
+                                                <?php echo esc($s['student_name']); ?>
+                                            </a>
+                                            <span class="badge bg-light text-muted border" style="font-size:0.72rem; font-family: monospace;">
+                                                <?php echo esc($s['registration_number']); ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <span class="badge bg-primary-subtle text-primary border border-primary-subtle fw-bold">
+                                                <?php echo esc($s['dept_code']); ?>
+                                            </span>
+                                            <small class="text-muted d-block mt-1">Batch <?php echo esc($s['batch_name']); ?></small>
+                                        </td>
+                                        <td>
+                                            <span class="badge bg-info-subtle text-info border border-info-subtle fw-bold">
+                                                <?php echo esc($s['current_cgpa'] ?? '0.00'); ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <?php $arr = (int)($s['standing_arrears'] ?? 0); ?>
+                                            <span class="badge bg-<?php echo $arr > 0 ? 'danger' : 'success'; ?>-subtle text-<?php echo $arr > 0 ? 'danger' : 'success'; ?> border border-<?php echo $arr > 0 ? 'danger' : 'success'; ?>-subtle">
+                                                <?php echo $arr; ?> Arrears
+                                            </span>
+                                        </td>
                                         <td>
                                             <span class="badge bg-light text-dark border"><?php echo esc($s['placement_status']); ?></span>
-                                            <span class="badge bg-light text-secondary border">Willing: <?php echo esc($s['placement_willingness']); ?></span>
+                                            <?php if ($s['placement_willingness'] === 'Yes'): ?>
+                                                <span class="badge bg-success-subtle text-success border border-success-subtle ms-1">Willing</span>
+                                            <?php endif; ?>
                                         </td>
-                                        <td><small class="text-muted"><?php echo esc($s['city'] ?: 'N/A'); ?></small></td>
+                                        <td class="text-muted small">
+                                            <?php echo esc($s['city'] ?: ($s['district'] ?: '-')); ?>
+                                        </td>
+                                        <td class="text-end pe-3">
+                                            <a href="student-view.php?student_id=<?php echo $s['student_id']; ?>" class="btn btn-sm btn-light border" title="View Profile">
+                                                <i class="fa-solid fa-eye text-primary"></i>
+                                            </a>
+                                        </td>
                                     </tr>
                                 <?php endforeach; ?>
                             <?php endif; ?>

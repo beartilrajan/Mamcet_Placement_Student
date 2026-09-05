@@ -48,7 +48,7 @@ Since students and officers will upload CVs, course thumbnails, and offer letter
 1. In **File Manager**, navigate to the `assets/` folder.
 2. If `uploads/` folder is not there, it will automatically be created on the first upload. To set it up manually:
    - Create a folder named `uploads` inside `assets/`.
-   - Inside `uploads/`, create four directories: `resumes`, `thumbnails`, `attachments`, and `offers`.
+   - Inside `uploads/`, create five subdirectories: `resumes`, `thumbnails`, `attachments`, `offers`, and `certifications`.
 3. Right-click the `uploads/` folder and choose **Permissions** (or **Chmod**).
 4. Set the permissions value to `755` (or `775` if required by the server) and check the box **Apply recursively to all subdirectories**. Click **Update**.
 

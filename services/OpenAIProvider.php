@@ -15,7 +15,7 @@ class OpenAIProvider implements AIProviderInterface {
         $this->model = $config['model_name'] ?? 'gpt-4o-mini';
         $this->endpoint = $config['api_endpoint'] ?? 'https://api.openai.com/v1/chat/completions';
         $this->temperature = (float)($config['temperature'] ?? 0.20);
-        $this->maxTokens = (int)($config['max_tokens'] ?? 2048);
+        $this->maxTokens = (int)($config['max_tokens'] ?? 1024);
     }
 
     public function getProviderName(): string {
@@ -69,7 +69,8 @@ class OpenAIProvider implements AIProviderInterface {
             'Authorization: Bearer ' . $this->apiKey
         ]);
         curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);

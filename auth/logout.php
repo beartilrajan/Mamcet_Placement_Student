@@ -6,7 +6,9 @@ require_once(__DIR__ . '/../includes/auth.php');
 require_once(__DIR__ . '/../includes/functions.php');
 
 
+$roleId = 0;
 if (isLoggedIn()) {
+    $roleId = (int)($_SESSION['role_id'] ?? 0);
     try {
         $db = Database::getInstance()->getConnection();
         logActivity($db, $_SESSION['user_id'], 'Logout', 'Logged out successfully.');
@@ -30,6 +32,10 @@ if (ini_get("session.use_cookies")) {
 // Destroy session
 session_destroy();
 
-// Redirect to gateway
-header("Location: ../index.php");
+// Redirect based on role: officers to officer login, students/default to student login
+if ($roleId === ROLE_SUPER_ADMIN || $roleId === ROLE_PLACEMENT_OFFICER) {
+    header("Location: officer-login.php");
+} else {
+    header("Location: student-login.php");
+}
 exit;

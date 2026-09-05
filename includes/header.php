@@ -49,21 +49,33 @@ try {
     $allSessions = $stmt->fetchAll();
     
     // Determine active session
-    if (!isset($_SESSION['active_session_id'])) {
+    $validSessionIds = array_map('intval', array_column($allSessions, 'session_id'));
+    if (!isset($_SESSION['active_session_id']) || !in_array((int)$_SESSION['active_session_id'], $validSessionIds, true)) {
+        $foundActive = false;
         foreach ($allSessions as $s) {
-            if ($s['is_active'] == 1) {
-                $_SESSION['active_session_id'] = $s['session_id'];
+            if ((int)$s['is_active'] === 1) {
+                $_SESSION['active_session_id'] = (int)$s['session_id'];
                 $_SESSION['active_session_name'] = $s['session_name'];
+                $foundActive = true;
                 break;
             }
         }
+        if (!$foundActive && !empty($allSessions)) {
+            $_SESSION['active_session_id'] = (int)$allSessions[0]['session_id'];
+            $_SESSION['active_session_name'] = $allSessions[0]['session_name'];
+        }
     }
     
-    $activeSessionId = $_SESSION['active_session_id'] ?? 1;
+    $activeSessionId = (int)($_SESSION['active_session_id'] ?? 1);
     $stmt = $db->prepare("SELECT session_name FROM academic_sessions WHERE session_id = ?");
     $stmt->execute([$activeSessionId]);
     $sessionRow = $stmt->fetch();
     $activeSessionName = $sessionRow['session_name'] ?? '2026–2027';
+    $_SESSION['active_session_name'] = $activeSessionName;
+    
+    // Auto-sync batch mappings across academic sessions
+    syncBatchAcademicSessions($db);
+
     
     // Fetch all portal branding settings
     $stmtSet = $db->query("SELECT setting_key, setting_value FROM settings");
@@ -96,15 +108,20 @@ if (strpos($_SERVER['REQUEST_URI'], '/admin/') !== false ||
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
     <title><?php echo isset($pageTitle) ? esc($pageTitle) . ' - ' : ''; ?><?php echo esc($portalName); ?></title>
     
+    <!-- Google Fonts Preconnect & Styles -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
     <!-- Dynamic Branding Styles -->
     <style>
         :root {
             --primary-color: <?php echo esc($primaryColor); ?>;
             --secondary-color: <?php echo esc($secondaryColor); ?>;
-            --brand-font: '<?php echo esc($brandFont); ?>', sans-serif;
+            --brand-font: '<?php echo esc($brandFont); ?>', 'Plus Jakarta Sans', sans-serif;
         }
         body {
             font-family: var(--brand-font) !important;
@@ -114,7 +131,7 @@ if (strpos($_SERVER['REQUEST_URI'], '/admin/') !== false ||
             border-color: var(--primary-color) !important;
         }
         .sidebar {
-            background-color: var(--primary-color) !important;
+            background-color: var(--secondary-color) !important;
         }
         .text-primary {
             color: var(--primary-color) !important;
@@ -127,9 +144,10 @@ if (strpos($_SERVER['REQUEST_URI'], '/admin/') !== false ||
         }
     </style>
     
-    <!-- Meta tags for SEO -->
+    <!-- Meta tags for SEO & Security -->
     <meta name="description" content="MAMCET Placement and Learning Portal for student records management, placement announcements, and learning tracking.">
     <meta name="author" content="MAMCET">
+    <meta name="csrf-token" content="<?php echo getCsrfToken(); ?>">
     
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -142,11 +160,15 @@ if (strpos($_SERVER['REQUEST_URI'], '/admin/') !== false ||
     <!-- SweetAlert2 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11.7.12/dist/sweetalert2.min.css" rel="stylesheet">
     <!-- Custom Style CSS -->
-    <link href="<?php echo $baseDir; ?>assets/css/style.css" rel="stylesheet">
+    <link href="<?php echo $baseDir; ?>assets/css/style.css?v=<?php echo time(); ?>" rel="stylesheet">
+    <!-- jQuery Core (Head load to guarantee availability for inline page scripts) -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 </head>
-<body>
+<body class="<?php echo isLoggedIn() ? 'app-shell' : 'public-page'; ?><?php echo $roleId === ROLE_STUDENT ? ' student-portal' : ''; ?>">
 
 <?php if (isLoggedIn()): ?>
+<!-- Sidebar backdrop overlay for mobile screens -->
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
 <div class="app-wrapper">
     <!-- Sidebar template will be loaded here -->
 <?php endif; ?>

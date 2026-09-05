@@ -1,9 +1,20 @@
 <?php
 // MAMCET Placement & Learning Portal - Interactive Mock Interview Chat
-require_once(__DIR__ . '/../includes/header.php');
+require_once(__DIR__ . '/../includes/auth.php');
+require_once(__DIR__ . '/../includes/csrf.php');
+require_once(__DIR__ . '/../includes/functions.php');
+require_once(__DIR__ . '/../config/database.php');
+
+$baseDir = '../';
+$roleId = (int)($_SESSION['role_id'] ?? 0);
 
 // Restrict to student only
-if ($roleId !== ROLE_STUDENT) {
+if (!isLoggedIn() || $roleId !== ROLE_STUDENT) {
+    if (isset($_POST['send_answer'])) {
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit;
+    }
     header("Location: " . $baseDir . "index.php");
     exit;
 }
@@ -17,20 +28,18 @@ $error = '';
 $stmtResume = $db->prepare("SELECT resume_id FROM resume_files WHERE student_id = ? AND is_current = 1 LIMIT 1");
 $stmtResume->execute([$studentId]);
 $resumeId = (int)$stmtResume->fetchColumn();
-
 // 1. Process Start Request
-if (isset($_POST['start_mock']) && $resumeId) {
+if (isset($_POST['start_mock'])) {
     try {
+        require_once(__DIR__ . '/../services/AIService.php');
+        $limitCheck = AIService::checkStudentLimits($db, $studentId, 'mock_interview');
+        if (!$limitCheck['allowed']) {
+            throw new Exception($limitCheck['reason']);
+        }
+
         $totalQ = (int)$_POST['total_questions'];
         if (!in_array($totalQ, [5, 10, 15])) {
             $totalQ = 5;
-        }
-
-        // Check daily/monthly limits before calling AI APIs
-        require_once(__DIR__ . '/../services/AIService.php');
-        $limitCheck = AIService::checkStudentLimits($db, $studentId);
-        if (!$limitCheck['allowed']) {
-            throw new Exception($limitCheck['reason']);
         }
 
         // Insert attempt record
@@ -41,7 +50,7 @@ if (isset($_POST['start_mock']) && $resumeId) {
         // Redirect to active interview session
         header("Location: mock-interview.php?attempt_id=" . $attemptId);
         exit;
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         $error = $e->getMessage();
     }
 }
@@ -58,6 +67,11 @@ if ($attemptId > 0) {
     $attempt = $stmtAtt->fetch();
     
     if (!$attempt) {
+        if (isset($_POST['send_answer'])) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'message' => 'Active session not found or already completed.']);
+            exit;
+        }
         header("Location: mock-interview.php");
         exit;
     }
@@ -82,6 +96,10 @@ if ($attemptId > 0) {
             // Get introductory question text
             $firstQuestionText = InterviewService::getMockChatNextQuestion($db, $studentId, $attemptId, 1, $attempt['total_questions'], '', '');
 
+            if (class_exists('Database')) {
+                $db = Database::getInstance()->getConnection();
+            }
+
             $db->beginTransaction();
             // Get or create question set
             $stmtSet = $db->prepare("SELECT set_id FROM interview_question_sets WHERE student_id = ? ORDER BY created_at DESC LIMIT 1");
@@ -90,7 +108,7 @@ if ($attemptId > 0) {
 
             if (!$setId) {
                 $stmtSetIns = $db->prepare("INSERT INTO interview_question_sets (student_id, resume_id) VALUES (?, ?)");
-                $stmtSetIns->execute([$studentId, $resumeId]);
+                $stmtSetIns->execute([$studentId, $resumeId > 0 ? $resumeId : null]);
                 $setId = (int)$db->lastInsertId();
             }
 
@@ -110,8 +128,11 @@ if ($attemptId > 0) {
             $qaHistory = $stmtHist->fetchAll();
             $currentQIndex = 2;
         } catch (Exception $ex) {
-            if ($db->inTransaction()) $db->rollBack();
+            if (isset($db) && $db->inTransaction()) {
+                $db->rollBack();
+            }
             $error = "Failed to start conversation: " . $ex->getMessage();
+            $db = Database::getInstance()->getConnection();
         }
     }
 }
@@ -167,6 +188,10 @@ if (isset($_POST['send_answer']) && $attempt) {
             $studentAnswer
         );
 
+        if (class_exists('Database')) {
+            $db = Database::getInstance()->getConnection();
+        }
+
         $db->beginTransaction();
 
         // Get setId
@@ -191,56 +216,75 @@ if (isset($_POST['send_answer']) && $attempt) {
         ]);
         exit;
     } catch (Exception $ex) {
-        if ($db->inTransaction()) $db->rollBack();
+        if (isset($db) && $db->inTransaction()) {
+            $db->rollBack();
+        }
         echo json_encode(['success' => false, 'message' => $ex->getMessage()]);
         exit;
     }
 }
+
+// Include HTML header for page rendering
+$pageTitle = "Interactive AI Mock Interview";
+require_once(__DIR__ . '/../includes/header.php');
+require_once(__DIR__ . '/../includes/sidebar.php');
+
+// Student AI Quota status for Mock Interview
+require_once(__DIR__ . '/../services/AIService.php');
+$quotaInfo = AIService::checkStudentLimits($db, $studentId, 'mock_interview');
 ?>
 
-<?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
-
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
-            <h1 class="h3 mb-4 text-gray-800"><i class="fa-solid fa-comments text-primary"></i> Interactive AI Mock Interview</h1>
+            <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 gap-3">
+                <h1 class="h3 mb-0 text-gray-800"><i class="fa-solid fa-comments text-primary"></i> Interactive AI Mock Interview</h1>
+                <?php echo AIService::renderQuotaBadge($quotaInfo); ?>
+            </div>
+
+            <!-- Quota Status Banner / Live Countdown Timer -->
+            <?php echo AIService::renderQuotaBanner($quotaInfo); ?>
 
             <?php if (!empty($error)): ?>
-                <div class="alert alert-danger">
-                    <i class="fa-solid fa-triangle-exclamation"></i> <?php echo $error; ?>
+                <div class="alert alert-danger shadow-sm">
+                    <i class="fa-solid fa-triangle-exclamation me-1"></i> <?php echo htmlspecialchars($error); ?>
                 </div>
             <?php endif; ?>
 
-            <?php if (!$resumeId): ?>
-                <div class="card shadow py-5 text-center text-muted">
-                    <div class="card-body">
-                        <i class="fa-solid fa-file-excel fa-3x mb-3"></i>
-                        <h5>No Resume Found</h5>
-                        <p>Upload a current resume to enable custom AI mock interview sessions.</p>
-                        <a href="resume.php" class="btn btn-primary mt-2">Go to My Resume</a>
+            <?php if (!$attempt): ?>
+                <?php if (!$resumeId): ?>
+                    <div class="alert alert-info border-0 shadow-sm d-flex align-items-center justify-content-between flex-wrap gap-2 mb-4">
+                        <div>
+                            <i class="fa-solid fa-info-circle me-2 text-info"></i>
+                            <strong>General Placement Mock Mode:</strong> Practicing standard campus placement rounds.
+                        </div>
+                        <a href="resume.php" class="btn btn-sm btn-primary">
+                            <i class="fa-solid fa-file-arrow-up me-1"></i> Upload Resume for Custom Mock
+                        </a>
                     </div>
-                </div>
-            <?php elseif (!$attempt): ?>
+                <?php endif; ?>
+
                 <!-- INITIAL CONFIG SCREEN -->
                 <div class="card shadow mb-4">
                     <div class="card-header bg-primary text-white py-3">
-                        <h6 class="m-0 font-weight-bold">Start AI Recruiter Chat Session</h6>
+                        <h6 class="m-0 font-weight-bold"><i class="fa-solid fa-user-tie me-1"></i> Start AI Recruiter Chat Session</h6>
                     </div>
-                    <div class="card-body text-center py-5">
-                        <i class="fa-solid fa-user-tie fa-4x text-primary mb-4"></i>
-                        <h4>Welcome to Placement Mock Center</h4>
-                        <p class="text-muted mb-4">Our Placement AI checks your resume and acts as a dynamic corporate recruiter. Choose your practice length to begin.</p>
+                    <div class="card-body text-center py-4 py-md-5 px-3">
+                        <i class="fa-solid fa-user-tie fa-3x text-primary mb-3"></i>
+                        <h4 class="fw-bold mb-2">Welcome to Placement Mock Center</h4>
+                        <p class="text-muted mb-4 small" style="max-width: 460px; margin-left: auto; margin-right: auto;">Our Placement AI simulates live corporate recruiter rounds. Choose your practice length to begin.</p>
                         
-                        <form method="POST" class="d-inline-block" style="max-width: 400px; width: 100%;">
-                            <div class="mb-4 text-start">
-                                <label class="form-label font-weight-bold">Interview Session Length</label>
+                        <form method="POST" class="d-inline-block text-start" style="max-width: 400px; width: 100%;" onsubmit="return <?php echo $quotaInfo['monthly_remaining'] > 0 ? "confirm('Start mock interview session? (Uses 1 of your " . $quotaInfo['monthly_limit'] . " monthly AI API calls)')" : "confirm('Your monthly AI limit is reached. The session will proceed with structured placement question tracks. Continue?')"; ?>;">
+                            <div class="mb-3">
+                                <label class="form-label fw-bold small text-muted">Interview Session Length</label>
                                 <select class="form-select" name="total_questions">
                                     <option value="5" selected>Quick Practice (5 questions)</option>
                                     <option value="10">Standard Interview (10 questions)</option>
                                     <option value="15">Full Length Assessment (15 questions)</option>
                                 </select>
                             </div>
-                            <button type="submit" name="start_mock" class="btn btn-primary btn-lg btn-block py-2 font-weight-bold">
-                                <i class="fa-solid fa-circle-play"></i> Start Session
+                            <button type="submit" name="start_mock" class="btn btn-primary btn-lg w-100 py-2 font-weight-bold shadow-sm">
+                                <i class="fa-solid fa-circle-play me-1"></i> Start Session
                             </button>
                         </form>
                     </div>
@@ -254,11 +298,11 @@ if (isset($_POST['send_answer']) && $attempt) {
                             <?php echo count($qaHistory); ?> / <?php echo $attempt['total_questions']; ?> Questions
                         </span>
                     </div>
-                    <div class="card-body bg-light p-4" style="height: 480px; overflow-y: scroll;" id="chatBody">
+                    <div class="card-body bg-light p-3 p-md-4" style="min-height: 280px; max-height: 520px; height: 50vh; overflow-y: auto;" id="chatBody">
                         
                         <!-- AI Introduction bubble -->
-                        <div class="d-flex mb-4">
-                            <div class="bg-primary text-white p-3 rounded shadow-sm" style="max-width:75%; border-top-left-radius:0px;">
+                        <div class="d-flex mb-3">
+                            <div class="bg-primary text-white p-3 rounded shadow-sm" style="max-width:88%; border-top-left-radius:0px;">
                                 <small class="d-block text-white-50 font-weight-bold mb-1">MAMCET AI Recruiter</small>
                                 <span>Hello! I am your AI placement recruiter today. I will ask you a series of questions. Let's start.</span>
                             </div>
@@ -267,16 +311,16 @@ if (isset($_POST['send_answer']) && $attempt) {
                         <!-- Render previous chat nodes -->
                         <?php foreach ($qaHistory as $idx => $qa): ?>
                             <!-- Question -->
-                            <div class="d-flex mb-4">
-                                <div class="bg-primary text-white p-3 rounded shadow-sm" style="max-width:75%; border-top-left-radius:0px;">
+                            <div class="d-flex mb-3">
+                                <div class="bg-primary text-white p-3 rounded shadow-sm" style="max-width:88%; border-top-left-radius:0px;">
                                     <small class="d-block text-white-50 font-weight-bold mb-1">MAMCET AI Recruiter</small>
                                     <span><?php echo htmlspecialchars($qa['question']); ?></span>
                                 </div>
                             </div>
                             <!-- Answer -->
                             <?php if (!empty($qa['student_answer'])): ?>
-                                <div class="d-flex mb-4 justify-content-end">
-                                    <div class="bg-white text-dark p-3 border rounded shadow-sm" style="max-width:75%; border-top-right-radius:0px;">
+                                <div class="d-flex mb-3 justify-content-end">
+                                    <div class="bg-white text-dark p-3 border rounded shadow-sm" style="max-width:88%; border-top-right-radius:0px;">
                                         <small class="d-block text-muted font-weight-bold mb-1">You</small>
                                         <span><?php echo htmlspecialchars($qa['student_answer']); ?></span>
                                     </div>
@@ -287,11 +331,11 @@ if (isset($_POST['send_answer']) && $attempt) {
                     </div>
                     
                     <!-- Text box panel -->
-                    <div class="card-footer bg-white p-3">
+                    <div class="card-footer bg-white p-2 p-md-3">
                         <div class="input-group">
-                            <input type="text" class="form-control py-3" id="studentResponseBox" placeholder="Type your response here..." aria-label="Recipient's username" aria-describedby="button-addon2">
-                            <button class="btn btn-primary px-4 font-weight-bold" type="button" id="btnSendAnswer">
-                                <i class="fa-solid fa-paper-plane"></i> Send
+                            <input type="text" class="form-control" id="studentResponseBox" placeholder="Type your response here..." aria-label="Candidate response">
+                            <button class="btn btn-primary px-3 px-md-4 font-weight-bold" type="button" id="btnSendAnswer">
+                                <i class="fa-solid fa-paper-plane me-1"></i> Send
                             </button>
                         </div>
                     </div>
@@ -344,11 +388,13 @@ $(document).ready(function() {
             <div class="d-flex mb-4" id="aiChatLoaderBubble">
                 <div class="bg-primary text-white p-3 rounded shadow-sm" style="max-width:75%; border-top-left-radius:0px;">
                     <small class="d-block text-white-50 font-weight-bold mb-1">MAMCET AI Recruiter</small>
-                    <span><i class="fa-solid fa-spinner fa-spin"></i> Typings...</span>
+                    <span><i class="fa-solid fa-spinner fa-spin me-1"></i> Typing...</span>
                 </div>
             </div>
         `);
         chatBody.scrollTop(chatBody[0].scrollHeight);
+
+        const csrfToken = $('meta[name="csrf-token"]').attr('content') || '';
 
         // Submit via AJAX
         $.ajax({
@@ -356,7 +402,11 @@ $(document).ready(function() {
             type: 'POST',
             data: {
                 send_answer: 1,
-                answer: text
+                answer: text,
+                csrf_token: csrfToken
+            },
+            headers: {
+                'X-CSRF-TOKEN': csrfToken
             },
             dataType: 'json',
             success: function(response) {
@@ -381,14 +431,23 @@ $(document).ready(function() {
                         $('#interviewProgressText').text(response.progress + ' Questions');
                     }
                 } else {
-                    alert(response.message || "An error occurred.");
+                    alert(response.message || "An error occurred while generating next question.");
                 }
             },
             error: function(xhr, status, error) {
                 $('#aiChatLoaderBubble').remove();
-                input.prop('disabled', false);
+                input.prop('disabled', false).focus();
                 btn.prop('disabled', false);
-                alert("Failed to connect to AI Coach. Check API keys in settings.");
+                
+                let errorMsg = "Failed to connect to AI Recruiter. Please try again.";
+                try {
+                    const res = JSON.parse(xhr.responseText);
+                    if (res && res.message) {
+                        errorMsg = res.message;
+                    }
+                } catch(e) {}
+                
+                alert(errorMsg);
             }
         });
     }

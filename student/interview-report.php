@@ -30,10 +30,14 @@ if (!$attempt) {
 }
 
 // 2. Fetch or trigger final report compilation
-// We save final summary feedback under dummy answer ID = -($attemptId) inside interview_feedback table
-$dummyAnswerId = -($attemptId);
-$stmtFeed = $db->prepare("SELECT * FROM interview_feedback WHERE answer_id = ?");
-$stmtFeed->execute([$dummyAnswerId]);
+$stmtFeed = $db->prepare("
+    SELECT f.* 
+    FROM interview_feedback f 
+    JOIN interview_answers a ON f.answer_id = a.answer_id 
+    WHERE a.attempt_id = ? 
+    ORDER BY f.feedback_id DESC LIMIT 1
+");
+$stmtFeed->execute([$attemptId]);
 $reportRecord = $stmtFeed->fetch();
 
 $reportData = [];
@@ -69,15 +73,19 @@ if ($reportRecord) {
 <?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
 
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h1 class="h3 mb-0 text-gray-800"><i class="fa-solid fa-chart-line text-success"></i> Interview Performance Scorecard</h1>
                 <a href="mock-interview.php" class="btn btn-primary d-print-none"><i class="fa-solid fa-arrow-rotate-left"></i> Start New Practice</a>
             </div>
 
-            <!-- Warning notice on text emotion detection (Privacy Compliance) -->
-            <div class="alert alert-light border shadow-sm mb-4" role="alert" style="border-left: 5px solid #6c757d !important;">
-                <small class="text-muted"><i class="fa-solid fa-triangle-exclamation"></i> Mock analytics and confidence levels represent estimates formulated entirely from written text structures. We do not claim to accurately detect emotion or physical confidence parameters from text alone.</small>
+            <!-- AI Analytics Disclaimer -->
+            <div class="alert alert-secondary bg-light-subtle py-2 px-3 mb-3 d-flex align-items-center gap-2 small shadow-sm border-0 border-start border-4 border-secondary" role="alert">
+                <i class="fa-solid fa-circle-info text-secondary flex-shrink-0"></i>
+                <div class="text-muted">
+                    <strong class="text-dark">Note:</strong> Analytics and confidence metrics are estimated from text responses for practice purposes.
+                </div>
             </div>
 
             <?php if (!empty($error)): ?>

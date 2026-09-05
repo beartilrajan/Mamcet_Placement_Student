@@ -88,35 +88,7 @@ unset($m);
 ?>
 
 <div class="main-content">
-    <header class="top-navbar">
-        <div class="navbar-left">
-            <button class="sidebar-toggle"><i class="fa-solid fa-bars"></i></button>
-            <h4 class="mb-0 text-dark fw-bold">Lesson Viewer</h4>
-        </div>
-        
-        <div class="navbar-right">
-            <div class="session-selector-container">
-                <span class="small text-muted fw-bold d-none d-md-inline">Active Session:</span>
-                <select class="session-selector-select" id="globalSessionSelector">
-                    <?php foreach ($allSessions as $s): ?>
-                        <option value="<?php echo $s['session_id']; ?>" <?php echo $s['session_id'] == $activeSessionId ? 'selected' : ''; ?>>
-                            <?php echo esc($s['session_name']); ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            
-            <div class="user-profile-dropdown">
-                <div class="user-profile-img text-center d-flex align-items-center justify-content-center bg-primary text-white" style="width:36px;height:36px;border-radius:50%;font-weight:bold;">
-                    <?php echo strtoupper(substr($student['student_name'], 0, 1)); ?>
-                </div>
-                <div class="user-profile-info d-none d-md-flex">
-                    <span class="user-name"><?php echo esc($student['student_name']); ?></span>
-                    <span class="user-role">Student</span>
-                </div>
-            </div>
-        </div>
-    </header>
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
 
     <div class="page-container">
         

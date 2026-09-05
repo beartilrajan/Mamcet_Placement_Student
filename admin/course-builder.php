@@ -49,6 +49,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     $stmt = $db->prepare("INSERT INTO course_modules (course_id, module_title, description, module_order) VALUES (?, ?, ?, ?)");
                     $stmt->execute([$courseId, $moduleTitle, $description, $moduleOrder]);
                     $success = 'Module added successfully.';
+
+                    require_once(__DIR__ . '/../services/NotificationService.php');
+                    NotificationService::notifyCourseCurriculumUpdated($db, $courseId, $moduleTitle, (int)$_SESSION['user_id'], 'Module');
                 } else {
                     $stmt = $db->prepare("UPDATE course_modules SET module_title = ?, description = ?, module_order = ? WHERE module_id = ? AND course_id = ?");
                     $stmt->execute([$moduleTitle, $description, $moduleOrder, $moduleId, $courseId]);
@@ -117,6 +120,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     ");
                     $stmt->execute([$moduleId, $lessonTitle, $description, $youtubeUrl, $videoId, $duration, $notesText, $pdfPath, $externalUrl, $lessonOrder]);
                     $success = 'Lesson created successfully.';
+
+                    require_once(__DIR__ . '/../services/NotificationService.php');
+                    NotificationService::notifyCourseCurriculumUpdated($db, $courseId, $lessonTitle, (int)$_SESSION['user_id'], 'Lesson');
                 } else {
                     // Retain PDF resource path if not uploading new
                     if (empty($pdfPath)) {
@@ -148,6 +154,78 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $error = 'Database error: ' . $e->getMessage();
             }
         }
+    } elseif ($action === 'delete_course') {
+        try {
+            $stmtCInfo = $db->prepare("SELECT course_title, course_code, thumbnail_path FROM courses WHERE course_id = ?");
+            $stmtCInfo->execute([$courseId]);
+            $courseInfo = $stmtCInfo->fetch(PDO::FETCH_ASSOC);
+
+            if ($courseInfo) {
+                $db->beginTransaction();
+
+                // 1. Gather all lesson PDF resources for cleanup
+                $stmtPdfs = $db->prepare("
+                    SELECT cl.pdf_resource_path 
+                    FROM course_lessons cl 
+                    JOIN course_modules cm ON cl.module_id = cm.module_id 
+                    WHERE cm.course_id = ? AND cl.pdf_resource_path IS NOT NULL AND cl.pdf_resource_path != ''
+                ");
+                $stmtPdfs->execute([$courseId]);
+                $pdfPaths = $stmtPdfs->fetchAll(PDO::FETCH_COLUMN);
+
+                // 2. Cascade delete records in proper child-to-parent order
+                $db->prepare("
+                    DELETE slp FROM student_lesson_progress slp
+                    JOIN course_lessons cl ON slp.lesson_id = cl.lesson_id
+                    JOIN course_modules cm ON cl.module_id = cm.module_id
+                    WHERE cm.course_id = ?
+                ")->execute([$courseId]);
+
+                $db->prepare("DELETE FROM student_course_progress WHERE course_id = ?")->execute([$courseId]);
+
+                $db->prepare("
+                    DELETE cl FROM course_lessons cl
+                    JOIN course_modules cm ON cl.module_id = cm.module_id
+                    WHERE cm.course_id = ?
+                ")->execute([$courseId]);
+
+                $db->prepare("DELETE FROM course_modules WHERE course_id = ?")->execute([$courseId]);
+                $db->prepare("DELETE FROM course_assignments WHERE course_id = ?")->execute([$courseId]);
+                $db->prepare("DELETE FROM course_departments WHERE course_id = ?")->execute([$courseId]);
+                $db->prepare("DELETE FROM course_batches WHERE course_id = ?")->execute([$courseId]);
+                $db->prepare("DELETE FROM courses WHERE course_id = ?")->execute([$courseId]);
+
+                $db->commit();
+
+                // 3. Delete physical files from disk
+                if (!empty($courseInfo['thumbnail_path'])) {
+                    $thumbFile = __DIR__ . '/../' . ltrim($courseInfo['thumbnail_path'], '/\\');
+                    if (file_exists($thumbFile) && is_file($thumbFile)) {
+                        @unlink($thumbFile);
+                    }
+                }
+                foreach ($pdfPaths as $pdfPath) {
+                    if (!empty($pdfPath)) {
+                        $resFile = __DIR__ . '/../' . ltrim($pdfPath, '/\\');
+                        if (file_exists($resFile) && is_file($resFile)) {
+                            @unlink($resFile);
+                        }
+                    }
+                }
+
+                logActivity($db, $_SESSION['user_id'], 'Delete Course', "Deleted course ID $courseId ({$courseInfo['course_code']})");
+                setFlash('success', "Course '{$courseInfo['course_code']} - {$courseInfo['course_title']}' and all associated curriculum content were deleted successfully.");
+                header("Location: courses.php");
+                exit;
+            } else {
+                $error = 'Course not found or already deleted.';
+            }
+        } catch (Exception $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            $error = 'Database error: ' . $e->getMessage();
+        }
     }
 }
 
@@ -177,35 +255,7 @@ $studentProgressStats = $stmtStats->fetchAll();
 ?>
 
 <div class="main-content">
-    <header class="top-navbar">
-        <div class="navbar-left">
-            <button class="sidebar-toggle"><i class="fa-solid fa-bars"></i></button>
-            <h4 class="mb-0 text-dark fw-bold">Curriculum Builder</h4>
-        </div>
-        
-        <div class="navbar-right">
-            <div class="session-selector-container">
-                <span class="small text-muted fw-bold d-none d-md-inline">Active Session:</span>
-                <select class="session-selector-select" id="globalSessionSelector">
-                    <?php foreach ($allSessions as $s): ?>
-                        <option value="<?php echo $s['session_id']; ?>" <?php echo $s['session_id'] == $activeSessionId ? 'selected' : ''; ?>>
-                            <?php echo esc($s['session_name']); ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            
-            <div class="user-profile-dropdown">
-                <div class="user-profile-img text-center d-flex align-items-center justify-content-center bg-primary text-white" style="width:36px;height:36px;border-radius:50%;font-weight:bold;">
-                    <?php echo strtoupper(substr($_SESSION['username'] ?? 'U', 0, 1)); ?>
-                </div>
-                <div class="user-profile-info d-none d-md-flex">
-                    <span class="user-name"><?php echo esc($loggedInUser['display_name'] ?? 'User'); ?></span>
-                    <span class="user-role"><?php echo $_SESSION['role_id'] === 1 ? 'Super Admin' : 'Placement Officer'; ?></span>
-                </div>
-            </div>
-        </div>
-    </header>
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
 
     <div class="page-container">
         <?php if (!empty($error)): ?>
@@ -227,12 +277,15 @@ $studentProgressStats = $stmtStats->fetchAll();
                     <h2 class="fw-bold mb-1 text-dark"><?php echo esc($course['course_title']); ?></h2>
                     <p class="mb-0 text-muted">Syllabus configuration dashboard for course code: <strong><?php echo esc($course['course_code']); ?></strong></p>
                 </div>
-                <div class="d-flex gap-2">
+                <div class="d-flex gap-2 flex-wrap">
                     <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#moduleModal" onclick="openCreateModuleModal()">
                         <i class="fa-solid fa-plus me-1"></i> Add Module
                     </button>
                     <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#lessonModal" onclick="openCreateLessonModal()">
                         <i class="fa-solid fa-circle-plus me-1"></i> Add Lesson
+                    </button>
+                    <button type="button" class="btn btn-outline-danger" onclick="confirmDeleteThisCourse()" title="Delete this entire course">
+                        <i class="fa-solid fa-trash-can me-1"></i> Delete Course
                     </button>
                 </div>
             </div>
@@ -498,6 +551,12 @@ $studentProgressStats = $stmtStats->fetchAll();
     </div>
 </div>
 
+<!-- Hidden Course Deletion Form -->
+<form id="deleteThisCourseForm" action="course-builder.php?course_id=<?php echo $courseId; ?>" method="POST" style="display: none;">
+    <?php csrfInput(); ?>
+    <input type="hidden" name="action" value="delete_course">
+</form>
+
 <?php require_once(__DIR__ . '/../includes/footer.php'); ?>
 
 <script>
@@ -559,6 +618,41 @@ function openEditLessonModal(les) {
     
     var modal = new bootstrap.Modal(document.getElementById('lessonModal'));
     modal.show();
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+function confirmDeleteThisCourse() {
+    const title = <?php echo json_encode($course['course_title']); ?>;
+    const code = <?php echo json_encode($course['course_code']); ?>;
+    if (typeof Swal !== 'undefined') {
+        Swal.fire({
+            title: 'Delete LMS Course?',
+            html: `Are you sure you want to permanently delete <strong>${escapeHtml(title)} (${escapeHtml(code)})</strong>?<br><br><div class="alert alert-danger text-start p-2 mb-0 small"><i class="fa-solid fa-triangle-exclamation me-1"></i> <strong>Warning:</strong> All syllabus modules, lesson videos, notes/PDF resources, and enrolled student progress records will be permanently deleted. This cannot be undone.</div>`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#dc3545',
+            cancelButtonColor: '#6c757d',
+            confirmButtonText: '<i class="fa-solid fa-trash-can me-1"></i> Yes, Delete Course',
+            cancelButtonText: 'Cancel'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                $('#deleteThisCourseForm').submit();
+            }
+        });
+    } else {
+        if (confirm(`Permanently delete course "${title} (${code})"? All curriculum modules, lessons, and progress will be deleted.`)) {
+            $('#deleteThisCourseForm').submit();
+        }
+    }
 }
 </script>
 

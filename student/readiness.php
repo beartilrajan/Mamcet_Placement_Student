@@ -191,13 +191,16 @@ try {
 <?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
 
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
             <h1 class="h3 mb-4 text-gray-800"><i class="fa-solid fa-award text-primary"></i> Campus Placement Readiness Index</h1>
 
-            <!-- COMPULSORY DISCLAIMER BANNER -->
-            <div class="alert alert-light border shadow-sm mb-4" role="alert" style="border-left: 5px solid #6c757d !important;">
-                <h6 class="font-weight-bold text-muted"><i class="fa-solid fa-circle-info"></i> Portal Guidance</h6>
-                <small class="text-muted">This scorecard represents an internal preparation indicator. It does not constitute a guaranteed placement probability or direct recruitment endorsement. Score assessments help students check and refine skills prior to corporate drives.</small>
+            <!-- Readiness Guidance Banner -->
+            <div class="alert alert-secondary bg-light-subtle py-2 px-3 mb-3 d-flex align-items-center gap-2 small shadow-sm border-0 border-start border-4 border-secondary" role="alert">
+                <i class="fa-solid fa-circle-info text-secondary flex-shrink-0"></i>
+                <div class="text-muted">
+                    <strong class="text-dark">Guidance:</strong> Internal readiness indicator for preparation — does not guarantee placement offers.
+                </div>
             </div>
 
             <?php if (!empty($message)): ?>
@@ -214,18 +217,18 @@ try {
                         <div class="card-header bg-primary text-white py-3">
                             <h6 class="m-0 font-weight-bold">Readiness Index Score</h6>
                         </div>
-                        <div class="card-body py-5">
-                            <div class="d-inline-flex position-relative mb-4 align-items-center justify-content-center" style="width: 150px; height: 150px;">
-                                <div class="position-absolute" style="font-size: 2.5rem; font-weight: 800; color: #4e73df;">
-                                    <?php echo $totalReadiness; ?><small style="font-size:0.9rem; font-weight:400; color:#aaa;">/100</small>
+                        <div class="card-body py-4 py-md-5">
+                            <div class="gauge-score-wrap mb-3" style="width: 150px; height: 150px;">
+                                <div class="gauge-score-text" style="color: #4e73df;">
+                                    <span class="gauge-score-val"><?php echo $totalReadiness; ?></span><span class="gauge-score-max">/100</span>
                                 </div>
-                                <svg class="w-100 h-100" style="transform: rotate(-90deg);">
-                                    <circle cx="75" cy="75" r="65" stroke="#f3f3f3" stroke-width="12" fill="transparent"/>
-                                    <circle cx="75" cy="75" r="65" stroke="#4e73df" stroke-width="12" fill="transparent"
-                                            stroke-dasharray="408" stroke-dashoffset="<?php echo 408 - (408 * $totalReadiness / 100); ?>"/>
+                                <svg class="w-100 h-100" viewBox="0 0 160 160" style="transform: rotate(-90deg);">
+                                    <circle cx="80" cy="80" r="66" stroke="#f1f5f9" stroke-width="12" fill="transparent"/>
+                                    <circle cx="80" cy="80" r="66" stroke="#4e73df" stroke-width="12" stroke-linecap="round" fill="transparent"
+                                            stroke-dasharray="414.69" stroke-dashoffset="<?php echo 414.69 - (414.69 * $totalReadiness / 100); ?>"/>
                                 </svg>
                             </div>
-                            <h5 class="font-weight-bold mt-2 text-dark">Portal Evaluation Rating</h5>
+                            <h5 class="font-weight-bold mt-2 text-dark" style="font-size:1.1rem;">Portal Evaluation Rating</h5>
                         </div>
                     </div>
 

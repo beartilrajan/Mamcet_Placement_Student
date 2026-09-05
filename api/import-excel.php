@@ -100,6 +100,8 @@ try {
         $sem4 = !empty($data['sem4_gpa']) ? (float)$data['sem4_gpa'] : null;
         $sem5 = !empty($data['sem5_gpa']) ? (float)$data['sem5_gpa'] : null;
         $sem6 = !empty($data['sem6_gpa']) ? (float)$data['sem6_gpa'] : null;
+        $sem7 = !empty($data['sem7_gpa']) ? (float)$data['sem7_gpa'] : null;
+        $sem8 = !empty($data['sem8_gpa']) ? (float)$data['sem8_gpa'] : null;
         
         // Fetch active batch details for admission/graduation years
         $stmtBatch = $db->prepare("SELECT admission_year, graduation_year, current_year_of_study FROM batches WHERE batch_id = ?");
@@ -172,13 +174,13 @@ try {
                 UPDATE student_academics 
                 SET tenth_percentage = ?, twelfth_percentage = ?, diploma_percentage = ?, current_cgpa = ?, 
                     standing_arrears = ?, history_of_arrears = ?, 
-                    sem1_gpa = ?, sem2_gpa = ?, sem3_gpa = ?, sem4_gpa = ?, sem5_gpa = ?, sem6_gpa = ?, gpa_up_to_6 = ? 
+                    sem1_gpa = ?, sem2_gpa = ?, sem3_gpa = ?, sem4_gpa = ?, sem5_gpa = ?, sem6_gpa = ?, sem7_gpa = ?, sem8_gpa = ?, gpa_up_to_6 = ? 
                 WHERE student_id = ?
             ");
             $stmtUpdAcademics->execute([
                 $tenth, $twelfth, $diploma, $cgpa,
                 $standingArrears, $historyArrears,
-                $sem1, $sem2, $sem3, $sem4, $sem5, $sem6, $cgpa,
+                $sem1, $sem2, $sem3, $sem4, $sem5, $sem6, $sem7, $sem8, $cgpa,
                 $studentId
             ]);
             
@@ -211,13 +213,13 @@ try {
                 INSERT INTO student_academics (
                     student_id, tenth_percentage, twelfth_percentage, diploma_percentage, current_cgpa, 
                     standing_arrears, history_of_arrears, 
-                    sem1_gpa, sem2_gpa, sem3_gpa, sem4_gpa, sem5_gpa, sem6_gpa, gpa_up_to_6
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sem1_gpa, sem2_gpa, sem3_gpa, sem4_gpa, sem5_gpa, sem6_gpa, sem7_gpa, sem8_gpa, gpa_up_to_6
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmtInsAcademics->execute([
                 $studentId, $tenth, $twelfth, $diploma, $cgpa,
                 $standingArrears, $historyArrears,
-                $sem1, $sem2, $sem3, $sem4, $sem5, $sem6, $cgpa
+                $sem1, $sem2, $sem3, $sem4, $sem5, $sem6, $sem7, $sem8, $cgpa
             ]);
             
             $importedCount++;
@@ -238,6 +240,9 @@ try {
     }
     
     $db->commit();
+    
+    // Ensure batch mapping is synchronized for current session
+    syncBatchAcademicSessions($db);
     
     // Log Activity
     logActivity($db, $_SESSION['user_id'], 'Execute Import', "Completed import batch ID $importId. Imported: $importedCount, Updated: $updatedCount, Skipped: $skippedCount");

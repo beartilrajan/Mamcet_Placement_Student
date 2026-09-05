@@ -41,7 +41,7 @@ if (isset($_POST['run_migration'])) {
         ");
         
         $db->exec("INSERT IGNORE INTO ai_settings (setting_id, provider_id, model_name, api_key, temperature, max_tokens) VALUES 
-            (1, 1, 'gemini-1.5-flash', 'AIzaSyBtIc9T5aIjUojDeS4Dg7aB-h9_W-kRwUc', 0.20, 2048),
+            (1, 1, 'gemini-3.6-flash', '', 0.20, 2048),
             (2, 2, 'gpt-4o-mini', '', 0.20, 2048)
         ");
 
@@ -51,13 +51,71 @@ if (isset($_POST['run_migration'])) {
         ");
 
         $tablesInstalled = true;
+        require_once(__DIR__ . '/../services/JobSeederService.php');
+        JobSeederService::seedIfEmpty($db);
         $message = "Stage 2 database migrations successfully completed! All tables, indexes, and initial records are ready.";
     } catch (Exception $e) {
         $error = "Migration Failed: " . $e->getMessage();
     }
 }
 
+// 1.5 Process Sample Job Descriptions Seeder Request
+if (isset($_POST['seed_sample_jobs']) && $tablesInstalled) {
+    try {
+        require_once(__DIR__ . '/../services/JobSeederService.php');
+        $count = JobSeederService::seed($db);
+        $message = "Successfully populated $count campus recruitment placement drives (Zoho, TCS, Infosys, Amazon, Wipro, Cognizant, Accenture, Kaar Technologies)!";
+    } catch (Exception $e) {
+        $error = "Failed to populate drives: " . $e->getMessage();
+    }
+}
+
 // 2. Process Configuration Saving Request
+if (isset($_POST['test_ai_connection']) && $tablesInstalled) {
+    try {
+        require_once(__DIR__ . '/../services/AIService.php');
+        require_once(__DIR__ . '/../services/GeminiProvider.php');
+        require_once(__DIR__ . '/../services/OpenAIProvider.php');
+        
+        $activeProviderStr = $_POST['active_provider'] ?? 'gemini';
+        
+        if ($activeProviderStr === 'openai') {
+            $apiKey = $_POST['openai_api_key'] ?? '';
+            if (strpos($apiKey, '••••') !== false || empty($apiKey)) {
+                $stmtGet = $db->prepare("SELECT api_key FROM ai_settings WHERE provider_id = 2");
+                $stmtGet->execute();
+                $fetched = $stmtGet->fetchColumn();
+                $apiKey = ($fetched !== false && $fetched !== null) ? $fetched : '';
+            }
+            $provider = new OpenAIProvider([
+                'api_key' => $apiKey,
+                'model_name' => $_POST['openai_model'] ?? 'gpt-4o-mini',
+                'temperature' => (float)($_POST['openai_temp'] ?? 0.2),
+                'max_tokens' => (int)($_POST['openai_max_tokens'] ?? 2048)
+            ]);
+        } else {
+            $apiKey = $_POST['gemini_api_key'] ?? '';
+            if (strpos($apiKey, '••••') !== false || empty($apiKey)) {
+                $stmtGet = $db->prepare("SELECT api_key FROM ai_settings WHERE provider_id = 1");
+                $stmtGet->execute();
+                $fetched = $stmtGet->fetchColumn();
+                $apiKey = ($fetched !== false && $fetched !== null) ? $fetched : '';
+            }
+            $provider = new GeminiProvider([
+                'api_key' => $apiKey,
+                'model_name' => $_POST['gemini_model'] ?? 'gemini-3.6-flash',
+                'temperature' => (float)($_POST['gemini_temp'] ?? 0.2),
+                'max_tokens' => (int)($_POST['gemini_max_tokens'] ?? 2048)
+            ]);
+        }
+        
+        $testResult = $provider->generateText("Respond with 'Connection OK' if you receive this message.");
+        $message = "AI API Connection Successful! Active Provider (" . strtoupper($provider->getProviderName()) . ") responded: \"" . htmlspecialchars(substr($testResult, 0, 100)) . "...\"";
+    } catch (Exception $e) {
+        $error = "AI API Connection Test Failed: " . $e->getMessage() . " Please enter a valid API key and save configurations.";
+    }
+}
+
 if (isset($_POST['save_config']) && $tablesInstalled) {
     try {
         $activeProvider = $_POST['active_provider'];
@@ -66,12 +124,13 @@ if (isset($_POST['save_config']) && $tablesInstalled) {
         $db->prepare("UPDATE ai_providers SET is_active = CASE WHEN provider_name = ? THEN 1 ELSE 0 END")->execute([$activeProvider]);
 
         // Save Gemini settings
-        $geminiKey = $_POST['gemini_api_key'];
-        // If the key is redacted, do not overwrite the existing key
+        $geminiKey = $_POST['gemini_api_key'] ?? '';
+        // If the key is redacted or empty, preserve existing key from DB if present
         if (strpos($geminiKey, '••••') !== false) {
             $stmtGet = $db->prepare("SELECT api_key FROM ai_settings WHERE provider_id = 1");
             $stmtGet->execute();
-            $geminiKey = $stmtGet->fetchColumn() ?: 'AIzaSyBtIc9T5aIjUojDeS4Dg7aB-h9_W-kRwUc';
+            $fetched = $stmtGet->fetchColumn();
+            $geminiKey = ($fetched !== false && $fetched !== null) ? $fetched : '';
         }
         $stmtGemini = $db->prepare("
             UPDATE ai_settings 
@@ -86,11 +145,12 @@ if (isset($_POST['save_config']) && $tablesInstalled) {
         ]);
 
         // Save OpenAI settings
-        $openaiKey = $_POST['openai_api_key'];
+        $openaiKey = $_POST['openai_api_key'] ?? '';
         if (strpos($openaiKey, '••••') !== false) {
             $stmtGet = $db->prepare("SELECT api_key FROM ai_settings WHERE provider_id = 2");
             $stmtGet->execute();
-            $openaiKey = $stmtGet->fetchColumn();
+            $fetched = $stmtGet->fetchColumn();
+            $openaiKey = ($fetched !== false && $fetched !== null) ? $fetched : '';
         }
         $stmtOpenai = $db->prepare("
             UPDATE ai_settings 
@@ -103,6 +163,10 @@ if (isset($_POST['save_config']) && $tablesInstalled) {
             (float)$_POST['openai_temp'],
             (int)$_POST['openai_max_tokens']
         ]);
+
+        // The student AI quota is a fixed app-wide safety limit. Keep legacy
+        // database settings aligned so they cannot advertise a larger quota.
+        $db->exec("UPDATE ai_settings SET daily_limit = 3, monthly_limit = 3");
 
         // Update stage2 config file parameters dynamically
         $configPath = __DIR__ . '/../config/stage2.php';
@@ -126,8 +190,8 @@ if (isset($_POST['save_config']) && $tablesInstalled) {
                         'max_tokens' => (int)$_POST['openai_max_tokens'],
                     ],
                     'limits' => [
-                        'daily_limit_per_student' => (int)$_POST['daily_limit'],
-                        'monthly_limit_per_student' => (int)$_POST['monthly_limit'],
+                        'daily_limit_per_student' => 3,
+                        'monthly_limit_per_student' => 3,
                         'cooldown_seconds' => (int)$_POST['cooldown_seconds']
                     ]
                 ],
@@ -178,9 +242,9 @@ if (isset($_POST['save_config']) && $tablesInstalled) {
 
 // 3. Load configurations from database & file
 $activeProvider = 'gemini';
-$gemini = ['model_name' => 'gemini-1.5-flash', 'api_key' => '', 'temperature' => 0.2, 'max_tokens' => 2048];
-$openai = ['model_name' => 'gpt-4o-mini', 'api_key' => '', 'temperature' => 0.2, 'max_tokens' => 2048];
-$limits = ['daily_limit_per_student' => 3, 'monthly_limit_per_student' => 10, 'cooldown_seconds' => 60];
+$gemini = ['model_name' => 'gemini-3.6-flash', 'api_key' => '', 'temperature' => 0.2, 'max_tokens' => 1024];
+$openai = ['model_name' => 'gpt-4o-mini', 'api_key' => '', 'temperature' => 0.2, 'max_tokens' => 1024];
+$limits = ['daily_limit_per_student' => 3, 'monthly_limit_per_student' => 3, 'cooldown_seconds' => 0];
 $smtp = ['host' => '', 'port' => 587, 'encryption' => 'tls', 'username' => '', 'password' => '', 'sender_name' => '', 'sender_email' => '', 'batch_size' => 25];
 $modules = ['resume_management' => true, 'ats_analysis' => true, 'resume_builder' => true, 'job_matching' => true, 'interview_preparation' => true, 'mock_interview' => true, 'eligibility_automation' => true, 'application_tracking' => true, 'notifications' => true, 'advanced_reports' => true];
 $maxFileSize = 5;
@@ -208,6 +272,9 @@ if ($tablesInstalled) {
     if (file_exists($configFile)) {
         $fileConfig = require($configFile);
         $limits = $fileConfig['ai']['limits'] ?? $limits;
+        // Do not trust legacy or manually edited values above the fixed cap.
+        $limits['daily_limit_per_student'] = 3;
+        $limits['monthly_limit_per_student'] = 3;
         $smtp = $fileConfig['smtp'] ?? $smtp;
         $modules = $fileConfig['modules'] ?? $modules;
         $maxFileSize = $fileConfig['resume']['max_file_size_mb'] ?? $maxFileSize;
@@ -225,6 +292,7 @@ function redactApiKey(?string $key): string {
 <?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
 
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h1 class="h3 mb-0 text-gray-800"><i class="fa-solid fa-gears text-primary"></i> Stage 2 Portal Settings</h1>
@@ -287,11 +355,19 @@ function redactApiKey(?string $key): string {
                                         <h6 class="text-primary font-weight-bold">Google Gemini API Configuration</h6>
                                         <div class="mb-3">
                                             <label class="form-label">Model Name</label>
-                                            <input type="text" class="form-control" name="gemini_model" value="<?php echo htmlspecialchars($gemini['model_name'] ?? 'gemini-1.5-flash'); ?>">
+                                            <input type="text" class="form-control" name="gemini_model" list="geminiModelsList" value="<?php echo htmlspecialchars(!empty($gemini['model_name']) ? $gemini['model_name'] : 'gemini-3.6-flash'); ?>" placeholder="e.g. gemini-3.6-flash">
+                                            <datalist id="geminiModelsList">
+                                                <option value="gemini-3.6-flash">gemini-3.6-flash (Default / Recommended)</option>
+                                                <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                                                <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                                                <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                                            </datalist>
+                                            <small class="text-muted">Default model is <code>gemini-3.6-flash</code> for high-speed placement ATS analysis and mock evaluations.</small>
                                         </div>
                                         <div class="mb-3">
                                             <label class="form-label">API Key</label>
                                             <input type="text" class="form-control font-monospace" name="gemini_api_key" value="<?php echo htmlspecialchars(redactApiKey($gemini['api_key'] ?? '')); ?>" placeholder="Enter Gemini Key">
+                                            <small class="text-muted">Get a free API key from <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" class="text-primary font-weight-bold"><i class="fa-solid fa-arrow-up-right-from-square"></i> Google AI Studio</a></small>
                                         </div>
                                         <div class="row">
                                             <div class="col-md-6 mb-3">
@@ -332,19 +408,22 @@ function redactApiKey(?string $key): string {
 
                                     <hr>
 
-                                    <h6 class="text-dark font-weight-bold">AI Usage & Rate Limits (Per Student)</h6>
+                                    <h6 class="text-dark font-weight-bold"><i class="fa-solid fa-gauge-high text-primary me-1"></i> AI Usage & Rate Limits (Per Student)</h6>
                                     <div class="row">
                                         <div class="col-md-4 mb-3">
-                                            <label class="form-label">Daily Limit</label>
-                                            <input type="number" class="form-control" name="daily_limit" value="<?php echo (int)($limits['daily_limit_per_student'] ?? 3); ?>">
+                                            <label class="form-label font-weight-bold">Daily Limit</label>
+                                            <input type="number" class="form-control" name="daily_limit" value="3" min="3" max="3" readonly>
+                                            <small class="text-muted">Fixed at 3; the app-wide monthly cap is enforced server-side.</small>
                                         </div>
                                         <div class="col-md-4 mb-3">
-                                            <label class="form-label">Monthly Limit</label>
-                                            <input type="number" class="form-control" name="monthly_limit" value="<?php echo (int)($limits['monthly_limit_per_student'] ?? 10); ?>">
+                                            <label class="form-label font-weight-bold">Monthly Limit</label>
+                                            <input type="number" class="form-control" name="monthly_limit" value="3" min="3" max="3" readonly>
+                                            <small class="text-muted">Fixed app-wide limit: each student gets 3 AI calls per month.</small>
                                         </div>
                                         <div class="col-md-4 mb-3">
-                                            <label class="form-label">Cooldown (Seconds)</label>
-                                            <input type="number" class="form-control" name="cooldown_seconds" value="<?php echo (int)($limits['cooldown_seconds'] ?? 60); ?>">
+                                            <label class="form-label font-weight-bold">Cooldown (Seconds)</label>
+                                            <input type="number" class="form-control" name="cooldown_seconds" value="<?php echo (int)($limits['cooldown_seconds'] ?? 0); ?>">
+                                            <small class="text-muted">Cooling period between consecutive requests.</small>
                                         </div>
                                     </div>
                                 </div>
@@ -461,9 +540,17 @@ function redactApiKey(?string $key): string {
                                 </div>
                             </div>
 
-                            <button type="submit" name="save_config" class="btn btn-success btn-block py-2 font-weight-bold shadow-sm mb-4">
-                                <i class="fa-solid fa-floppy-disk"></i> Save Portal Configuration
-                            </button>
+                            <div class="d-grid gap-2 mb-4">
+                                <button type="submit" name="test_ai_connection" class="btn btn-outline-info py-2 font-weight-bold shadow-sm">
+                                    <i class="fa-solid fa-vial-circle-check"></i> Test AI API Connection
+                                </button>
+                                <button type="submit" name="save_config" class="btn btn-success py-2 font-weight-bold shadow-sm">
+                                    <i class="fa-solid fa-floppy-disk"></i> Save Portal Configuration
+                                </button>
+                                <button type="submit" name="seed_sample_jobs" class="btn btn-outline-primary py-2 font-weight-bold shadow-sm mt-2">
+                                    <i class="fa-solid fa-briefcase"></i> Seed / Reset Sample Placement Drives (8 Companies)
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </form>

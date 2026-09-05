@@ -122,6 +122,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     }
                     
                     $db->commit();
+
+                    // Dispatch portal notification to targeted students
+                    if ($status === 'active' && $courseIdForMapping > 0) {
+                        require_once(__DIR__ . '/../services/NotificationService.php');
+                        NotificationService::notifyCoursePublished($db, (int)$courseIdForMapping, (int)$_SESSION['user_id'], $action);
+                    }
+
                     $success = 'Course ' . ($action === 'create' ? 'created' : 'updated') . ' successfully.';
                     logActivity($db, $_SESSION['user_id'], 'Manage Course', "Saved course $code ($title)");
                 } else {
@@ -138,10 +145,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $courseId = (int)($_POST['course_id'] ?? 0);
         if ($courseId > 0) {
             try {
-                $db->prepare("DELETE FROM courses WHERE course_id = ?")->execute([$courseId]);
-                $success = 'Course deleted successfully.';
-                logActivity($db, $_SESSION['user_id'], 'Delete Course', "Deleted course ID $courseId");
+                // Fetch course info for logging and file cleanup
+                $stmtC = $db->prepare("SELECT course_title, course_code, thumbnail_path FROM courses WHERE course_id = ?");
+                $stmtC->execute([$courseId]);
+                $courseInfo = $stmtC->fetch(PDO::FETCH_ASSOC);
+
+                if (!$courseInfo) {
+                    $error = 'Course not found or already deleted.';
+                } else {
+                    $db->beginTransaction();
+
+                    // 1. Gather all lesson PDF resources for cleanup
+                    $stmtPdfs = $db->prepare("
+                        SELECT cl.pdf_resource_path 
+                        FROM course_lessons cl 
+                        JOIN course_modules cm ON cl.module_id = cm.module_id 
+                        WHERE cm.course_id = ? AND cl.pdf_resource_path IS NOT NULL AND cl.pdf_resource_path != ''
+                    ");
+                    $stmtPdfs->execute([$courseId]);
+                    $pdfPaths = $stmtPdfs->fetchAll(PDO::FETCH_COLUMN);
+
+                    // 2. Cascade delete records in proper child-to-parent order
+                    $db->prepare("
+                        DELETE slp FROM student_lesson_progress slp
+                        JOIN course_lessons cl ON slp.lesson_id = cl.lesson_id
+                        JOIN course_modules cm ON cl.module_id = cm.module_id
+                        WHERE cm.course_id = ?
+                    ")->execute([$courseId]);
+
+                    $db->prepare("DELETE FROM student_course_progress WHERE course_id = ?")->execute([$courseId]);
+
+                    $db->prepare("
+                        DELETE cl FROM course_lessons cl
+                        JOIN course_modules cm ON cl.module_id = cm.module_id
+                        WHERE cm.course_id = ?
+                    ")->execute([$courseId]);
+
+                    $db->prepare("DELETE FROM course_modules WHERE course_id = ?")->execute([$courseId]);
+                    $db->prepare("DELETE FROM course_assignments WHERE course_id = ?")->execute([$courseId]);
+                    $db->prepare("DELETE FROM course_departments WHERE course_id = ?")->execute([$courseId]);
+                    $db->prepare("DELETE FROM course_batches WHERE course_id = ?")->execute([$courseId]);
+                    $db->prepare("DELETE FROM courses WHERE course_id = ?")->execute([$courseId]);
+
+                    $db->commit();
+
+                    // 3. Delete physical files from disk
+                    if (!empty($courseInfo['thumbnail_path'])) {
+                        $thumbFile = __DIR__ . '/../' . ltrim($courseInfo['thumbnail_path'], '/\\');
+                        if (file_exists($thumbFile) && is_file($thumbFile)) {
+                            @unlink($thumbFile);
+                        }
+                    }
+                    foreach ($pdfPaths as $pdfPath) {
+                        if (!empty($pdfPath)) {
+                            $resFile = __DIR__ . '/../' . ltrim($pdfPath, '/\\');
+                            if (file_exists($resFile) && is_file($resFile)) {
+                                @unlink($resFile);
+                            }
+                        }
+                    }
+
+                    $success = "Course '{$courseInfo['course_code']} - {$courseInfo['course_title']}' and all associated curriculum lessons were deleted successfully.";
+                    logActivity($db, $_SESSION['user_id'], 'Delete Course', "Deleted course ID $courseId ({$courseInfo['course_code']})");
+                }
             } catch (Exception $e) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
                 $error = 'Database error: ' . $e->getMessage();
             }
         }
@@ -173,35 +243,7 @@ $courses = $stmtC->fetchAll();
 ?>
 
 <div class="main-content">
-    <header class="top-navbar">
-        <div class="navbar-left">
-            <button class="sidebar-toggle"><i class="fa-solid fa-bars"></i></button>
-            <h4 class="mb-0 text-dark fw-bold">Learning Management Portal</h4>
-        </div>
-        
-        <div class="navbar-right">
-            <div class="session-selector-container">
-                <span class="small text-muted fw-bold d-none d-md-inline">Active Session:</span>
-                <select class="session-selector-select" id="globalSessionSelector">
-                    <?php foreach ($allSessions as $s): ?>
-                        <option value="<?php echo $s['session_id']; ?>" <?php echo $s['session_id'] == $activeSessionId ? 'selected' : ''; ?>>
-                            <?php echo esc($s['session_name']); ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            
-            <div class="user-profile-dropdown">
-                <div class="user-profile-img text-center d-flex align-items-center justify-content-center bg-primary text-white" style="width:36px;height:36px;border-radius:50%;font-weight:bold;">
-                    <?php echo strtoupper(substr($_SESSION['username'] ?? 'U', 0, 1)); ?>
-                </div>
-                <div class="user-profile-info d-none d-md-flex">
-                    <span class="user-name"><?php echo esc($loggedInUser['display_name'] ?? 'User'); ?></span>
-                    <span class="user-role"><?php echo $_SESSION['role_id'] === 1 ? 'Super Admin' : 'Placement Officer'; ?></span>
-                </div>
-            </div>
-        </div>
-    </header>
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
 
     <div class="page-container">
         <?php if (!empty($error)): ?>
@@ -266,12 +308,15 @@ $courses = $stmtC->fetchAll();
                             
                             <div class="px-4 pb-4 pt-0 border-top bg-light d-flex justify-content-between align-items-center">
                                 <span class="small text-muted"><i class="fa-solid fa-layer-group me-1"></i> Modules: <strong><?php echo $c['total_modules']; ?></strong> (<?php echo $c['total_lessons']; ?> lessons)</span>
-                                <div>
-                                    <a href="course-builder.php?course_id=<?php echo $c['course_id']; ?>" class="btn btn-sm btn-primary">
+                                <div class="d-flex align-items-center gap-1">
+                                    <a href="course-builder.php?course_id=<?php echo $c['course_id']; ?>" class="btn btn-sm btn-primary" title="Build Curriculum">
                                         <i class="fa-solid fa-cubes me-1"></i> Build
                                     </a>
-                                    <button class="btn btn-sm btn-light border" onclick="openEditModal(<?php echo htmlspecialchars(json_encode($c)); ?>)">
-                                        <i class="fa-solid fa-pencil"></i>
+                                    <button type="button" class="btn btn-sm btn-light border" onclick="openEditModal(<?php echo htmlspecialchars(json_encode($c)); ?>)" title="Edit Course Details">
+                                        <i class="fa-solid fa-pencil text-secondary"></i>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-light border text-danger" onclick="confirmDeleteCourse(<?php echo (int)$c['course_id']; ?>, '<?php echo esc(addslashes($c['course_title'])); ?>', '<?php echo esc(addslashes($c['course_code'])); ?>')" title="Delete Course">
+                                        <i class="fa-solid fa-trash-can"></i>
                                     </button>
                                 </div>
                             </div>
@@ -391,19 +436,47 @@ $courses = $stmtC->fetchAll();
                     </div>
                 </div>
                 
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-light border" data-bs-dismiss="modal">Close</button>
-                    <button type="submit" class="btn btn-primary" id="btnSubmitForm">Create Course</button>
+                <div class="modal-footer d-flex justify-content-between align-items-center">
+                    <div>
+                        <button type="button" class="btn btn-sm btn-outline-danger" id="btnDeleteCourseInModal" style="display: none;" onclick="deleteCourseFromModal()">
+                            <i class="fa-solid fa-trash-can me-1"></i> Delete Course
+                        </button>
+                    </div>
+                    <div class="d-flex gap-2 ms-auto">
+                        <button type="button" class="btn btn-light border" data-bs-dismiss="modal">Close</button>
+                        <button type="submit" class="btn btn-primary" id="btnSubmitForm">Create Course</button>
+                    </div>
                 </div>
             </form>
         </div>
     </div>
 </div>
 
+<!-- Hidden Deletion Form -->
+<form id="deleteCourseForm" action="courses.php" method="POST" style="display: none;">
+    <?php csrfInput(); ?>
+    <input type="hidden" name="action" value="delete">
+    <input type="hidden" name="course_id" id="delete_course_id" value="0">
+</form>
+
 <?php require_once(__DIR__ . '/../includes/footer.php'); ?>
 
 <script>
+let currentEditCourse = null;
+
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
 function openCreateModal() {
+    currentEditCourse = null;
+    $('#btnDeleteCourseInModal').hide();
     $('#courseModalLabel').text('Create Course');
     $('#form_action').val('create');
     $('#form_course_id').val('0');
@@ -426,6 +499,8 @@ function openCreateModal() {
 }
 
 function openEditModal(c) {
+    currentEditCourse = c;
+    $('#btnDeleteCourseInModal').show();
     $('#courseModalLabel').text('Edit Course Details');
     $('#form_action').val('edit');
     $('#form_course_id').val(c.course_id);
@@ -468,6 +543,41 @@ function openEditModal(c) {
     
     var modal = new bootstrap.Modal(document.getElementById('courseModal'));
     modal.show();
+}
+
+function deleteCourseFromModal() {
+    if (!currentEditCourse) return;
+    const modalEl = document.getElementById('courseModal');
+    const modalInstance = bootstrap.Modal.getInstance(modalEl);
+    if (modalInstance) {
+        modalInstance.hide();
+    }
+    confirmDeleteCourse(currentEditCourse.course_id, currentEditCourse.course_title, currentEditCourse.course_code);
+}
+
+function confirmDeleteCourse(courseId, title, code) {
+    if (typeof Swal !== 'undefined') {
+        Swal.fire({
+            title: 'Delete LMS Course?',
+            html: `Are you sure you want to permanently delete <strong>${escapeHtml(title)} (${escapeHtml(code)})</strong>?<br><br><div class="alert alert-danger text-start p-2 mb-0 small"><i class="fa-solid fa-triangle-exclamation me-1"></i> <strong>Warning:</strong> All syllabus modules, lesson videos, notes/PDF resources, and enrolled student progress records will be permanently deleted. This cannot be undone.</div>`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#dc3545',
+            cancelButtonColor: '#6c757d',
+            confirmButtonText: '<i class="fa-solid fa-trash-can me-1"></i> Yes, Delete Course',
+            cancelButtonText: 'Cancel'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                $('#delete_course_id').val(courseId);
+                $('#deleteCourseForm').submit();
+            }
+        });
+    } else {
+        if (confirm(`Permanently delete course "${title} (${code})"? All curriculum modules, lessons, and progress will be deleted.`)) {
+            $('#delete_course_id').val(courseId);
+            $('#deleteCourseForm').submit();
+        }
+    }
 }
 </script>
 

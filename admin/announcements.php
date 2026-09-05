@@ -1,5 +1,5 @@
 <?php
-// MAMCET Placement & Learning Portal - Placement Announcements Management Page
+// MAMCET Placement & Learning Portal - Placement Announcements Management Page (Senior UI/UX Redesign)
 
 $pageTitle = 'Placement Announcements';
 require_once(__DIR__ . '/../includes/header.php');
@@ -13,6 +13,10 @@ $error = '';
 $success = '';
 
 $activeSessionId = getActiveAcademicSessionId();
+$stmtSess = $db->prepare("SELECT session_id, session_name FROM academic_sessions WHERE session_id = ?");
+$stmtSess->execute([$activeSessionId]);
+$activeSession = $stmtSess->fetch();
+$activeSessionName = $activeSession['session_name'] ?? '2024–2025';
 
 // Handle Create / Edit / Delete Announcement
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
@@ -54,9 +58,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 if (isset($_FILES['jd_file']) && $_FILES['jd_file']['error'] !== UPLOAD_ERR_NO_FILE) {
                     $file = $_FILES['jd_file'];
                     if ($file['error'] === UPLOAD_ERR_OK) {
-                        $finfo = new finfo(FILEINFO_MIME_TYPE);
-                        $mime = $finfo->file($file['tmp_name']);
-                        
                         $uploadDir = __DIR__ . '/../assets/uploads/attachments/';
                         if (!file_exists($uploadDir)) {
                             mkdir($uploadDir, 0777, true);
@@ -89,7 +90,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 } else {
                     $annIdForMapping = $announcementId;
                     
-                    // Retain old JD attachment if no new file is uploaded
                     if (empty($jdFilePath)) {
                         $stmtJd = $db->prepare("SELECT jd_file_path FROM announcements WHERE announcement_id = ?");
                         $stmtJd->execute([$announcementId]);
@@ -111,12 +111,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                         $expiryDate, $priority, $status, $announcementId
                     ]);
                     
-                    // Clear old mappings
                     $db->prepare("DELETE FROM announcement_departments WHERE announcement_id = ?")->execute([$announcementId]);
                     $db->prepare("DELETE FROM announcement_batches WHERE announcement_id = ?")->execute([$announcementId]);
                 }
                 
-                // Insert Department & Batch mappings
                 $stmtDept = $db->prepare("INSERT INTO announcement_departments (announcement_id, dept_id) VALUES (?, ?)");
                 foreach ($targetDepts as $dId) {
                     $stmtDept->execute([$annIdForMapping, $dId]);
@@ -128,6 +126,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 }
                 
                 $db->commit();
+
+                // Dispatch real-time portal notification to targeted students
+                if ($status === 'published' && $annIdForMapping > 0) {
+                    require_once(__DIR__ . '/../services/NotificationService.php');
+                    NotificationService::notifyAnnouncementPublished($db, (int)$annIdForMapping, (int)$_SESSION['user_id']);
+                }
+
                 $success = 'Announcement ' . ($action === 'create' ? 'published' : 'updated') . ' successfully.';
                 logActivity($db, $_SESSION['user_id'], 'Manage Announcement', "Published/Updated announcement $title");
             } catch (Exception $e) {
@@ -141,10 +146,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $announcementId = (int)($_POST['announcement_id'] ?? 0);
         if ($announcementId > 0) {
             try {
-                $db->prepare("DELETE FROM announcements WHERE announcement_id = ?")->execute([$announcementId]);
-                $success = 'Announcement deleted successfully.';
-                logActivity($db, $_SESSION['user_id'], 'Delete Announcement', "Deleted announcement ID $announcementId");
+                // Fetch announcement details for file cleanup and logging
+                $stmtAnnInfo = $db->prepare("SELECT title, jd_file_path FROM announcements WHERE announcement_id = ?");
+                $stmtAnnInfo->execute([$announcementId]);
+                $annInfo = $stmtAnnInfo->fetch(PDO::FETCH_ASSOC);
+
+                if (!$annInfo) {
+                    $error = 'Announcement not found or already deleted.';
+                } else {
+                    $db->beginTransaction();
+
+                    // 1. Delete associated mappings and reads
+                    $db->prepare("DELETE FROM announcement_departments WHERE announcement_id = ?")->execute([$announcementId]);
+                    $db->prepare("DELETE FROM announcement_batches WHERE announcement_id = ?")->execute([$announcementId]);
+                    
+                    try {
+                        $db->prepare("DELETE FROM announcement_reads WHERE announcement_id = ?")->execute([$announcementId]);
+                    } catch (\Throwable $t) {
+                        // ignore if table does not exist
+                    }
+
+                    // 2. Delete the announcement record
+                    $db->prepare("DELETE FROM announcements WHERE announcement_id = ?")->execute([$announcementId]);
+
+                    $db->commit();
+
+                    // 3. Remove attached JD file if exists on disk
+                    if (!empty($annInfo['jd_file_path'])) {
+                        $jdDiskFile = __DIR__ . '/../' . ltrim($annInfo['jd_file_path'], '/\\');
+                        if (file_exists($jdDiskFile) && is_file($jdDiskFile)) {
+                            @unlink($jdDiskFile);
+                        }
+                    }
+
+                    $success = "Announcement '{$annInfo['title']}' deleted successfully.";
+                    logActivity($db, $_SESSION['user_id'], 'Delete Announcement', "Deleted announcement ID $announcementId ({$annInfo['title']})");
+                }
             } catch (Exception $e) {
+                if ($db->inTransaction()) {
+                    $db->rollBack();
+                }
                 $error = 'Database error: ' . $e->getMessage();
             }
         }
@@ -152,12 +193,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 // Fetch helper resources
-$departments = $db->query("SELECT dept_id, dept_code FROM departments ORDER BY dept_code")->fetchAll();
+$departments = $db->query("SELECT dept_id, dept_code, dept_name FROM departments ORDER BY dept_code")->fetchAll();
 $batches = $db->query("SELECT batch_id, batch_name FROM batches ORDER BY graduation_year DESC")->fetchAll();
 
 // Fetch announcements for active session
 $stmtAnn = $db->prepare("
-    SELECT a.*, GROUP_CONCAT(DISTINCT d.dept_code SEPARATOR ', ') AS target_depts, GROUP_CONCAT(DISTINCT b.batch_name SEPARATOR ', ') AS target_batches
+    SELECT a.*, 
+           GROUP_CONCAT(DISTINCT d.dept_code SEPARATOR ', ') AS target_depts, 
+           GROUP_CONCAT(DISTINCT b.batch_name SEPARATOR ', ') AS target_batches
     FROM announcements a
     LEFT JOIN announcement_departments ad ON a.announcement_id = ad.announcement_id
     LEFT JOIN departments d ON ad.dept_id = d.dept_id
@@ -165,286 +208,680 @@ $stmtAnn = $db->prepare("
     LEFT JOIN batches b ON ab.batch_id = b.batch_id
     WHERE a.session_id = ?
     GROUP BY a.announcement_id
-    ORDER BY a.publish_date DESC
+    ORDER BY a.publish_date DESC, a.announcement_id DESC
 ");
 $stmtAnn->execute([$activeSessionId]);
-$announcements = $stmtAnn->fetchAll();
+$allAnnouncements = $stmtAnn->fetchAll(PDO::FETCH_ASSOC);
+
+// Metrics computation
+$today = strtotime('today');
+$kpiTotal = count($allAnnouncements);
+$kpiDrives = 0;
+$kpiActive = 0;
+$kpiExpiringSoon = 0;
+
+foreach ($allAnnouncements as $ann) {
+    if ($ann['announcement_type'] === 'Placement Drive') $kpiDrives++;
+    $exp = !empty($ann['expiry_date']) ? strtotime($ann['expiry_date']) : 0;
+    if ($exp >= $today) {
+        $kpiActive++;
+        if ($exp <= strtotime('+3 days', $today)) {
+            $kpiExpiringSoon++;
+        }
+    }
+}
+
+// Active Tab Filter
+$activeTab = $_GET['tab'] ?? 'all';
+$displayedAnnouncements = [];
+
+foreach ($allAnnouncements as $ann) {
+    $exp = !empty($ann['expiry_date']) ? strtotime($ann['expiry_date']) : 0;
+    $isExpired = $exp < $today;
+    
+    if ($activeTab === 'drives' && $ann['announcement_type'] !== 'Placement Drive') continue;
+    if ($activeTab === 'notices' && !in_array($ann['announcement_type'], ['General', 'Circular', 'Deadline Reminder'])) continue;
+    if ($activeTab === 'training' && !in_array($ann['announcement_type'], ['Training', 'Test Schedule', 'Interview Schedule'])) continue;
+    if ($activeTab === 'active' && $isExpired) continue;
+    if ($activeTab === 'expired' && !$isExpired) continue;
+    
+    $displayedAnnouncements[] = $ann;
+}
 ?>
 
-<div class="main-content">
-    <header class="top-navbar">
-        <div class="navbar-left">
-            <button class="sidebar-toggle"><i class="fa-solid fa-bars"></i></button>
-            <h4 class="mb-0 text-dark fw-bold">Placement Announcement Dashboard</h4>
-        </div>
-        
-        <div class="navbar-right">
-            <div class="session-selector-container">
-                <span class="small text-muted fw-bold d-none d-md-inline">Active Session:</span>
-                <select class="session-selector-select" id="globalSessionSelector">
-                    <?php foreach ($allSessions as $s): ?>
-                        <option value="<?php echo $s['session_id']; ?>" <?php echo $s['session_id'] == $activeSessionId ? 'selected' : ''; ?>>
-                            <?php echo esc($s['session_name']); ?>
-                        </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            
-            <div class="user-profile-dropdown">
-                <div class="user-profile-img text-center d-flex align-items-center justify-content-center bg-primary text-white" style="width:36px;height:36px;border-radius:50%;font-weight:bold;">
-                    <?php echo strtoupper(substr($_SESSION['username'] ?? 'U', 0, 1)); ?>
-                </div>
-                <div class="user-profile-info d-none d-md-flex">
-                    <span class="user-name"><?php echo esc($loggedInUser['display_name'] ?? 'User'); ?></span>
-                    <span class="user-role"><?php echo $_SESSION['role_id'] === 1 ? 'Super Admin' : 'Placement Officer'; ?></span>
-                </div>
-            </div>
-        </div>
-    </header>
+<style>
+/* Segmented Tab Bar */
+.segmented-tab-bar {
+    display: inline-flex;
+    background: #f1f5f9;
+    padding: 3px;
+    border-radius: 8px;
+    gap: 2px;
+    border: 1px solid #e2e8f0;
+    max-width: 100%;
+    overflow-x: auto;
+}
+.segmented-tab-item {
+    padding: 5px 12px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #475569;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+}
+.segmented-tab-item:hover {
+    color: #0f172a;
+    background: rgba(255,255,255,0.6);
+}
+.segmented-tab-item.active {
+    background: #ffffff;
+    color: #0b3d91;
+    font-weight: 700;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.segmented-pill-badge {
+    font-size: 0.7rem;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: #e2e8f0;
+    color: #475569;
+}
+.segmented-tab.active .segmented-pill-badge {
+    background: #e0e7ff;
+    color: #1e40af;
+}
 
-    <div class="page-container">
+/* High-Density Card and Table */
+.table-responsive {
+    overflow-x: auto;
+    overflow-y: visible !important;
+}
+.ann-table thead th {
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 700;
+    color: #475569;
+    background: #f8fafc;
+    padding: 10px 14px;
+    border-bottom: 1px solid #e2e8f0;
+}
+.ann-table tbody td {
+    padding: 10px 14px;
+    font-size: 0.84rem;
+    vertical-align: middle;
+    border-bottom: 1px solid #f1f5f9;
+}
+.ann-table tbody tr:hover {
+    background-color: #fbfcfe;
+}
+.ann-title-link {
+    color: #1e293b;
+    font-weight: 700;
+    text-decoration: none;
+    display: block;
+}
+.ann-title-link:hover {
+    color: #0b3d91;
+}
+
+/* Priority Indicators */
+.priority-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 4px;
+}
+.priority-dot-urgent { background-color: #ef4444; }
+.priority-dot-high { background-color: #f59e0b; }
+.priority-dot-medium { background-color: #3b82f6; }
+.priority-dot-low { background-color: #94a3b8; }
+
+/* DataTables Modern Styling */
+.dataTables_wrapper {
+    padding: 12px 16px;
+}
+.dataTables_wrapper .dataTables_length,
+.dataTables_wrapper .dataTables_filter {
+    margin-bottom: 12px;
+    font-size: 0.82rem;
+    color: #475569;
+}
+.dataTables_wrapper .dataTables_filter input {
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 0.82rem;
+    outline: none;
+    transition: all 0.2s ease;
+}
+.dataTables_wrapper .dataTables_filter input:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+.dataTables_wrapper .dataTables_length select {
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 0.82rem;
+    outline: none;
+}
+.dataTables_wrapper .dataTables_info,
+.dataTables_wrapper .dataTables_paginate {
+    padding-top: 12px;
+    font-size: 0.82rem;
+    color: #64748b;
+}
+.dataTables_wrapper .dataTables_paginate .paginate_button {
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    border: 1px solid #e2e8f0 !important;
+    background: #ffffff !important;
+    color: #334155 !important;
+}
+.dataTables_wrapper .dataTables_paginate .paginate_button.current,
+.dataTables_wrapper .dataTables_paginate .paginate_button.current:hover {
+    background: #0b3d91 !important;
+    color: #ffffff !important;
+    border-color: #0b3d91 !important;
+}
+.dataTables_wrapper .dataTables_paginate .paginate_button:hover {
+    background: #f1f5f9 !important;
+    color: #0f172a !important;
+    border-color: #cbd5e1 !important;
+}
+
+/* KPI Bar */
+.compact-kpi-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+}
+.compact-kpi-item {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.compact-kpi-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+}
+.compact-kpi-label { font-size: 0.7rem; color: #64748b; text-transform: uppercase; font-weight: 700; }
+.compact-kpi-value { font-size: 0.95rem; font-weight: 800; color: #1e293b; }
+</style>
+
+<div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
+
+    <div class="page-container py-3">
         <?php if (!empty($error)): ?>
-            <div class="alert alert-danger alert-dismissible fade show" role="alert">
-                <i class="fa-solid fa-triangle-exclamation me-2"></i> <?php echo esc($error); ?>
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            <div class="alert alert-danger alert-dismissible fade show py-2 px-3 small mb-3" role="alert">
+                <i class="fa-solid fa-triangle-exclamation me-1"></i> <?php echo esc($error); ?>
+                <button type="button" class="btn-close py-2" data-bs-dismiss="alert" aria-label="Close"></button>
             </div>
         <?php endif; ?>
         <?php if (!empty($success)): ?>
-            <div class="alert alert-success alert-dismissible fade show" role="alert">
-                <i class="fa-solid fa-circle-check me-2"></i> <?php echo esc($success); ?>
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            <div class="alert alert-success alert-dismissible fade show py-2 px-3 small mb-3" role="alert">
+                <i class="fa-solid fa-circle-check me-1"></i> <?php echo esc($success); ?>
+                <button type="button" class="btn-close py-2" data-bs-dismiss="alert" aria-label="Close"></button>
             </div>
         <?php endif; ?>
 
-        <div class="page-header">
-            <h1 class="page-title fw-bold">Announcements</h1>
-            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#announcementModal" onclick="openCreateModal()">
-                <i class="fa-solid fa-bullhorn me-2"></i> Publish Drive / Notice
+        <!-- 1. Header Toolbar -->
+        <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+            <div class="d-flex align-items-center gap-2">
+                <h4 class="fw-bold mb-0 text-dark">
+                    <i class="fa-solid fa-bullhorn text-primary me-2"></i> Placement Bulletins & Notices
+                </h4>
+                <span class="badge bg-light text-primary border px-2 py-1 small fw-semibold">
+                    <i class="fa-solid fa-calendar-check me-1"></i> Session: <?php echo esc($activeSessionName); ?>
+                </span>
+            </div>
+            <button class="btn btn-sm btn-primary shadow-sm" data-bs-toggle="modal" data-bs-target="#announcementModal" onclick="openCreateModal()">
+                <i class="fa-solid fa-plus me-1"></i> Publish Drive / Notice
             </button>
         </div>
 
-        <div class="mamcet-card">
-            <div class="card-header bg-white py-3">
-                <h5 class="card-title fw-bold mb-0"><i class="fa-solid fa-list-check text-primary me-2"></i> Published Placements & Alerts</h5>
+        <!-- 2. Compact KPI Metric Strip (Equal-Width 4-Card Grid) -->
+        <div class="compact-kpi-bar">
+            <div class="compact-kpi-item">
+                <div class="compact-kpi-icon bg-primary-subtle text-primary">
+                    <i class="fa-solid fa-bullhorn"></i>
+                </div>
+                <div>
+                    <div class="compact-kpi-label">Total Published</div>
+                    <div class="compact-kpi-value text-primary"><?php echo $kpiTotal; ?> Alerts</div>
+                </div>
             </div>
-            <div class="card-body p-0">
+
+            <div class="compact-kpi-item">
+                <div class="compact-kpi-icon bg-success-subtle text-success">
+                    <i class="fa-solid fa-briefcase"></i>
+                </div>
+                <div>
+                    <div class="compact-kpi-label">Placement Drives</div>
+                    <div class="compact-kpi-value text-success"><?php echo $kpiDrives; ?> Drives</div>
+                </div>
+            </div>
+
+            <div class="compact-kpi-item">
+                <div class="compact-kpi-icon bg-info-subtle text-info">
+                    <i class="fa-solid fa-circle-check"></i>
+                </div>
+                <div>
+                    <div class="compact-kpi-label">Active / Open</div>
+                    <div class="compact-kpi-value text-info"><?php echo $kpiActive; ?> Active</div>
+                </div>
+            </div>
+
+            <div class="compact-kpi-item">
+                <div class="compact-kpi-icon bg-warning-subtle text-warning">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                </div>
+                <div>
+                    <div class="compact-kpi-label">Expiring Soon (< 3d)</div>
+                    <div class="compact-kpi-value <?php echo $kpiExpiringSoon > 0 ? 'text-warning' : 'text-dark'; ?>"><?php echo $kpiExpiringSoon; ?> Alerts</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. Segmented Quick Tabs -->
+        <div class="d-flex flex-wrap align-items-center justify-content-between mb-3 gap-2">
+            <div class="segmented-tab-bar">
+                <a href="announcements.php?tab=all" class="segmented-tab-item <?php echo $activeTab === 'all' ? 'active' : ''; ?>">
+                    <i class="fa-solid fa-layer-group"></i> All Alerts <span class="segmented-pill-badge"><?php echo $kpiTotal; ?></span>
+                </a>
+                <a href="announcements.php?tab=drives" class="segmented-tab-item <?php echo $activeTab === 'drives' ? 'active' : ''; ?>">
+                    <i class="fa-solid fa-briefcase text-success"></i> Placement Drives <span class="segmented-pill-badge"><?php echo $kpiDrives; ?></span>
+                </a>
+                <a href="announcements.php?tab=notices" class="segmented-tab-item <?php echo $activeTab === 'notices' ? 'active' : ''; ?>">
+                    <i class="fa-solid fa-newspaper text-primary"></i> General Notices
+                </a>
+                <a href="announcements.php?tab=training" class="segmented-tab-item <?php echo $activeTab === 'training' ? 'active' : ''; ?>">
+                    <i class="fa-solid fa-award text-warning"></i> Training & Schedules
+                </a>
+                <a href="announcements.php?tab=active" class="segmented-tab-item <?php echo $activeTab === 'active' ? 'active' : ''; ?>">
+                    <i class="fa-solid fa-circle-dot text-success"></i> Active Only <span class="segmented-pill-badge"><?php echo $kpiActive; ?></span>
+                </a>
+                <a href="announcements.php?tab=expired" class="segmented-tab-item <?php echo $activeTab === 'expired' ? 'active' : ''; ?>">
+                    <i class="fa-regular fa-clock text-secondary"></i> Expired / Closed
+                </a>
+            </div>
+        </div>
+
+        <!-- 4. High-Density Announcement Data Table or Empty State Card -->
+        <div class="mamcet-card border-0 shadow-sm" style="overflow: hidden; border-radius: 10px;">
+            <?php if (empty($displayedAnnouncements)): ?>
+                <div class="p-5 text-center bg-white">
+                    <div class="mb-3">
+                        <span class="d-inline-flex align-items-center justify-content-center bg-primary-subtle text-primary rounded-circle" style="width: 56px; height: 56px; font-size: 1.5rem;">
+                            <i class="fa-solid fa-bullhorn"></i>
+                        </span>
+                    </div>
+                    <h6 class="fw-bold text-dark mb-1">No Announcements in this Category</h6>
+                    <p class="text-muted small mb-3">No campus recruitment drives or notices match the selected filter tab.</p>
+                    <button class="btn btn-sm btn-primary shadow-sm" data-bs-toggle="modal" data-bs-target="#announcementModal" onclick="openCreateModal()">
+                        <i class="fa-solid fa-plus me-1"></i> Publish First Announcement
+                    </button>
+                </div>
+            <?php else: ?>
                 <div class="table-responsive">
-                    <table class="table table-hover align-middle mb-0" id="annTable" style="border: none;">
-                        <thead class="table-light">
+                    <table class="table align-middle mb-0 ann-table" id="annTable">
+                        <thead>
                             <tr>
-                                <th>Announcement</th>
-                                <th>Targets (Dept / Batch)</th>
-                                <th>Eligibility Criteria</th>
-                                <th>Form Links</th>
-                                <th>Expiry</th>
+                                <th>Announcement & Role</th>
+                                <th>Target Audience</th>
+                                <th>Eligibility Rules</th>
+                                <th>Registration & Links</th>
+                                <th>Deadline</th>
                                 <th>Priority</th>
-                                <th class="text-end">Actions</th>
+                                <th class="text-end no-sort" width="80">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <?php foreach ($announcements as $ann): ?>
+                            <?php foreach ($displayedAnnouncements as $ann): 
+                                $exp = !empty($ann['expiry_date']) ? strtotime($ann['expiry_date']) : 0;
+                                $isExpired = $exp < $today;
+                                $diffDays = floor(($exp - $today) / (60 * 60 * 24));
+                                
+                                $isDrive = $ann['announcement_type'] === 'Placement Drive';
+                            ?>
                                 <tr>
                                     <td>
-                                        <span class="fw-bold text-dark d-block"><?php echo esc($ann['title']); ?></span>
-                                        <span class="badge bg-light text-primary border mb-1"><?php echo esc($ann['announcement_type']); ?></span>
-                                        <?php if (!empty($ann['company_name'])): ?>
-                                            <span class="small text-muted d-block">Company: <strong><?php echo esc($ann['company_name']); ?></strong> (<?php echo esc($ann['job_role']); ?>)</span>
+                                        <div class="d-flex align-items-center gap-2">
+                                            <div class="ann-icon-badge <?php echo $isDrive ? 'bg-success-subtle text-success' : 'bg-primary-subtle text-primary'; ?>">
+                                                <i class="fa-solid <?php echo $isDrive ? 'fa-briefcase' : ($ann['announcement_type'] === 'Training' ? 'fa-award' : 'fa-bullhorn'); ?>"></i>
+                                            </div>
+                                            <div>
+                                                <a href="javascript:void(0)" class="text-dark fw-bold text-decoration-none" onclick="openPreviewModal(<?php echo htmlspecialchars(json_encode($ann)); ?>)">
+                                                    <?php echo esc($ann['title']); ?>
+                                                </a>
+                                                <div class="d-flex align-items-center gap-2 mt-0">
+                                                    <span class="badge bg-light text-primary border px-1" style="font-size: 0.7rem;">
+                                                        <?php echo esc($ann['announcement_type']); ?>
+                                                    </span>
+                                                    <?php if (!empty($ann['company_name'])): ?>
+                                                        <span class="fw-semibold text-secondary" style="font-size: 0.76rem;">
+                                                            <?php echo esc($ann['company_name']); ?><?php echo !empty($ann['job_role']) ? ' • ' . esc($ann['job_role']) : ''; ?>
+                                                        </span>
+                                                    <?php endif; ?>
+                                                    <?php if (!empty($ann['package'])): ?>
+                                                        <span class="badge bg-success-subtle text-success border border-success-subtle px-1" style="font-size: 0.68rem;">
+                                                            ₹ <?php echo esc($ann['package']); ?>
+                                                        </span>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="text-truncate" style="max-width: 180px;">
+                                            <small class="text-muted d-block" style="font-size: 0.72rem;">Depts:</small>
+                                            <span class="badge bg-primary-subtle text-primary border border-primary-subtle" style="font-size: 0.7rem;">
+                                                <?php echo esc($ann['target_depts'] ?: 'All Depts'); ?>
+                                            </span>
+                                        </div>
+                                        <div class="text-truncate mt-1" style="max-width: 180px;">
+                                            <small class="text-muted d-block" style="font-size: 0.72rem;">Batches:</small>
+                                            <span class="badge bg-light text-dark border" style="font-size: 0.7rem;">
+                                                <?php echo esc($ann['target_batches'] ?: 'All Batches'); ?>
+                                            </span>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="d-flex align-items-center gap-1" style="font-size: 0.78rem;">
+                                            <span class="text-muted">CGPA:</span>
+                                            <strong>≥ <?php echo number_format((float)$ann['min_cgpa'], 2); ?></strong>
+                                        </div>
+                                        <div class="d-flex align-items-center gap-1 mt-0" style="font-size: 0.78rem;">
+                                            <span class="text-muted">Standing:</span>
+                                            <span class="badge <?php echo (int)$ann['max_standing_arrears'] === 0 ? 'bg-success-subtle text-success border border-success-subtle' : 'bg-warning-subtle text-warning border border-warning-subtle'; ?>" style="font-size: 0.68rem;">
+                                                ≤ <?php echo (int)$ann['max_standing_arrears']; ?> Arrears
+                                            </span>
+                                        </div>
+                                        <?php if (!empty($ann['placement_willingness_req'])): ?>
+                                            <small class="text-success d-block mt-0" style="font-size: 0.7rem;">
+                                                <i class="fa-solid fa-circle-check me-1"></i> Willing Only
+                                            </small>
                                         <?php endif; ?>
                                     </td>
                                     <td>
-                                        <span class="small d-block text-muted">Depts: <strong class="text-dark"><?php echo esc($ann['target_depts']); ?></strong></span>
-                                        <span class="small d-block text-muted">Batches: <strong class="text-dark"><?php echo esc($ann['target_batches']); ?></strong></span>
+                                        <div class="d-flex flex-column gap-1">
+                                            <?php if (!empty($ann['google_form_url'])): ?>
+                                                <a href="<?php echo esc($ann['google_form_url']); ?>" target="_blank" class="btn btn-sm btn-light border py-0 px-2 text-primary d-inline-flex align-items-center gap-1" style="font-size: 0.74rem; width: fit-content;">
+                                                    <i class="fa-solid fa-square-poll-horizontal text-primary"></i> Apply Form
+                                                </a>
+                                            <?php endif; ?>
+                                            <?php if (!empty($ann['google_sheet_url'])): ?>
+                                                <a href="<?php echo esc($ann['google_sheet_url']); ?>" target="_blank" class="btn btn-sm btn-light border py-0 px-2 text-success d-inline-flex align-items-center gap-1" style="font-size: 0.74rem; width: fit-content;" title="Google Sheet Responses">
+                                                    <i class="fa-solid fa-table text-success"></i> Responses <?php echo !empty($ann['is_sheet_student_visible']) ? '<span class="badge bg-info-subtle text-info p-0" style="font-size:0.6rem;">public</span>' : ''; ?>
+                                                </a>
+                                            <?php endif; ?>
+                                            <?php if (!empty($ann['jd_file_path'])): ?>
+                                                <a href="<?php echo $baseDir . esc($ann['jd_file_path']); ?>" target="_blank" class="btn btn-sm btn-light border py-0 px-2 text-danger d-inline-flex align-items-center gap-1" style="font-size: 0.74rem; width: fit-content;">
+                                                    <i class="fa-solid fa-file-pdf text-danger"></i> JD PDF
+                                                </a>
+                                            <?php endif; ?>
+                                        </div>
                                     </td>
                                     <td>
-                                        <span class="small d-block text-muted">Min CGPA: <strong><?php echo esc($ann['min_cgpa']); ?></strong></span>
-                                        <span class="small d-block text-muted">Arrears: <strong><= <?php echo (int)$ann['max_standing_arrears']; ?></strong></span>
-                                    </td>
-                                    <td>
-                                        <?php if (!empty($ann['google_form_url'])): ?>
-                                            <a href="<?php echo esc($ann['google_form_url']); ?>" target="_blank" class="badge bg-primary-subtle text-primary border text-decoration-none d-inline-block mb-1"><i class="fa-solid fa-square-poll-horizontal me-1"></i> Form Link</a>
+                                        <div class="fw-bold text-dark" style="font-size: 0.8rem;">
+                                            <?php echo date('d M Y', strtotime($ann['expiry_date'])); ?>
+                                        </div>
+                                        <?php if ($isExpired): ?>
+                                            <span class="badge bg-secondary-subtle text-secondary border py-0" style="font-size: 0.68rem;">
+                                                Closed / Expired
+                                            </span>
+                                        <?php elseif ($diffDays <= 3): ?>
+                                            <span class="badge bg-warning-subtle text-warning border border-warning-subtle py-0" style="font-size: 0.68rem;">
+                                                <i class="fa-regular fa-clock me-1"></i> <?php echo $diffDays === 0 ? 'Today' : $diffDays . 'd left'; ?>
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="badge bg-success-subtle text-success border border-success-subtle py-0" style="font-size: 0.68rem;">
+                                                <i class="fa-solid fa-circle-check me-1"></i> Active
+                                            </span>
                                         <?php endif; ?>
-                                        <?php if (!empty($ann['google_sheet_url'])): ?>
-                                            <a href="<?php echo esc($ann['google_sheet_url']); ?>" target="_blank" class="badge bg-success-subtle text-success border text-decoration-none d-inline-block" title="Google Sheet is visible to Officers only"><i class="fa-solid fa-table me-1"></i> Responses</a>
+                                    </td>
+                                    <td>
+                                        <?php if ($ann['priority'] === 'High'): ?>
+                                            <span class="badge bg-danger-subtle text-danger border border-danger-subtle py-0" style="font-size: 0.74rem;">
+                                                <span class="priority-dot priority-dot-high"></span> Urgent
+                                            </span>
+                                        <?php elseif ($ann['priority'] === 'Medium'): ?>
+                                            <span class="badge bg-primary-subtle text-primary border border-primary-subtle py-0" style="font-size: 0.74rem;">
+                                                <span class="priority-dot priority-dot-med"></span> Medium
+                                            </span>
+                                        <?php else: ?>
+                                            <span class="badge bg-light text-secondary border py-0" style="font-size: 0.74rem;">
+                                                <span class="priority-dot priority-dot-low"></span> Low
+                                            </span>
                                         <?php endif; ?>
-                                    </td>
-                                    <td>
-                                        <span class="small text-dark fw-bold"><?php echo esc(date('d M Y', strtotime($ann['expiry_date']))); ?></span>
-                                    </td>
-                                    <td>
-                                        <span class="badge <?php echo $ann['priority'] === 'High' ? 'bg-danger' : ($ann['priority'] === 'Medium' ? 'bg-primary' : 'bg-secondary'); ?>">
-                                            <?php echo $ann['priority']; ?>
-                                        </span>
                                     </td>
                                     <td class="text-end">
-                                        <button class="btn btn-sm btn-light border" onclick="openEditModal(<?php echo htmlspecialchars(json_encode($ann)); ?>)">
-                                            <i class="fa-solid fa-pencil text-secondary"></i> Edit
-                                        </button>
-                                        <form action="announcements.php" method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to delete this announcement?')">
-                                            <?php csrfInput(); ?>
-                                            <input type="hidden" name="action" value="delete">
-                                            <input type="hidden" name="announcement_id" value="<?php echo $ann['announcement_id']; ?>">
-                                            <button type="submit" class="btn btn-sm btn-light border"><i class="fa-solid fa-trash text-danger"></i></button>
-                                        </form>
+                                        <div class="d-inline-flex align-items-center gap-1">
+                                            <button class="btn btn-sm btn-light border py-0 px-2 text-danger" type="button" onclick="confirmDeleteAnnouncement(<?php echo (int)$ann['announcement_id']; ?>, '<?php echo esc(addslashes($ann['title'])); ?>')" title="Delete Announcement" style="font-size: 0.78rem;">
+                                                <i class="fa-solid fa-trash-can"></i>
+                                            </button>
+                                            <div class="dropdown">
+                                                <button class="btn btn-sm btn-light border py-0 px-2 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="font-size: 0.78rem;">
+                                                    Action
+                                                </button>
+                                                <ul class="dropdown-menu dropdown-menu-end shadow-sm" style="font-size: 0.82rem;">
+                                                    <li>
+                                                        <button class="dropdown-item py-1" type="button" onclick="openPreviewModal(<?php echo htmlspecialchars(json_encode($ann)); ?>)">
+                                                            <i class="fa-solid fa-eye text-primary me-2"></i> View Details
+                                                        </button>
+                                                    </li>
+                                                    <li>
+                                                        <button class="dropdown-item py-1" type="button" onclick="openEditModal(<?php echo htmlspecialchars(json_encode($ann)); ?>)">
+                                                            <i class="fa-solid fa-pencil text-secondary me-2"></i> Edit Notice
+                                                        </button>
+                                                    </li>
+                                                    <li><hr class="dropdown-divider my-1"></li>
+                                                    <li>
+                                                        <button type="button" class="dropdown-item py-1 text-danger" onclick="confirmDeleteAnnouncement(<?php echo (int)$ann['announcement_id']; ?>, '<?php echo esc(addslashes($ann['title'])); ?>')">
+                                                            <i class="fa-solid fa-trash-can text-danger me-2"></i> Delete
+                                                        </button>
+                                                    </li>
+                                                </ul>
+                                            </div>
+                                        </div>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
-            </div>
+            <?php endif; ?>
         </div>
     </div>
 </div>
 
-<!-- Modal Form -->
+<!-- 5. Redesigned Publish / Edit Modal -->
 <div class="modal fade" id="announcementModal" tabindex="-1" aria-labelledby="annModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content text-dark">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content text-dark border-0 shadow">
             <form action="announcements.php" method="POST" enctype="multipart/form-data">
                 <?php csrfInput(); ?>
                 <input type="hidden" name="action" id="form_action" value="create">
                 <input type="hidden" name="announcement_id" id="form_announcement_id" value="0">
                 
-                <div class="modal-header">
-                    <h5 class="modal-title fw-bold" id="annModalLabel">Publish Announcement</h5>
+                <div class="modal-header py-2 px-3 border-bottom bg-light">
+                    <h6 class="modal-title fw-bold" id="annModalLabel">
+                        <i class="fa-solid fa-bullhorn text-primary me-2"></i> Publish Placement Announcement
+                    </h6>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 
-                <div class="modal-body" style="max-height: 520px; overflow-y: auto;">
-                    <div class="row">
-                        <div class="col-md-8 mb-3">
-                            <label class="form-label">Announcement Title</label>
-                            <input type="text" name="title" id="modal_title" class="form-control" placeholder="e.g. TCS Ninja Recruitment Drive 2027" required>
-                        </div>
-                        <div class="col-md-4 mb-3">
-                            <label class="form-label">Announcement Type</label>
-                            <select name="announcement_type" id="modal_type" class="form-select">
-                                <option value="General">General Notice</option>
-                                <option value="Placement Drive" selected>Placement Drive</option>
-                                <option value="Training">Training Circular</option>
-                                <option value="Test Schedule">Test Schedule</option>
-                                <option value="Interview Schedule">Interview Schedule</option>
-                                <option value="Deadline Reminder">Deadline Reminder</option>
-                                <option value="Circular">College Circular</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div class="row">
-                        <div class="col-md-4 mb-3">
-                            <label class="form-label">Company Name</label>
-                            <input type="text" name="company_name" id="modal_company" class="form-control" placeholder="e.g. TCS">
-                        </div>
-                        <div class="col-md-4 mb-3">
-                            <label class="form-label">Job Role</label>
-                            <input type="text" name="job_role" id="modal_role" class="form-control" placeholder="e.g. Systems Engineer">
-                        </div>
-                        <div class="col-md-2 col-6 mb-3">
-                            <label class="form-label">Package (LPA)</label>
-                            <input type="text" name="package" id="modal_package" class="form-control" placeholder="e.g. 3.6 LPA">
-                        </div>
-                        <div class="col-md-2 col-6 mb-3">
-                            <label class="form-label">Location</label>
-                            <input type="text" name="job_location" id="modal_location" class="form-control" placeholder="e.g. Chennai">
-                        </div>
-                    </div>
-
+                <div class="modal-body p-3" style="max-height: 540px; overflow-y: auto;">
+                    <!-- Section 1: Basic Information -->
                     <div class="mb-3">
-                        <label class="form-label">Job Description / Circular Body</label>
-                        <textarea name="description" id="modal_desc" class="form-control" rows="4" placeholder="Enter circular details, registration processes, etc." required></textarea>
-                    </div>
-
-                    <h6 class="fw-bold border-bottom pb-2 mb-3 mt-4">Eligibility Constraints</h6>
-                    <div class="row">
-                        <div class="col-md-3 col-6 mb-3">
-                            <label class="form-label">Minimum CGPA</label>
-                            <input type="number" step="0.01" name="min_cgpa" id="modal_cgpa" class="form-control" value="0.00">
-                        </div>
-                        <div class="col-md-3 col-6 mb-3">
-                            <label class="form-label">Max Standing Arrears</label>
-                            <input type="number" name="max_standing_arrears" id="modal_max_arrears" class="form-control" value="99">
-                        </div>
-                        <div class="col-md-3 col-6 mb-3">
-                            <label class="form-label">Max History Arrears</label>
-                            <input type="number" name="max_history_arrears" id="modal_max_history" class="form-control" value="99">
-                        </div>
-                        <div class="col-md-3 col-6 mb-3 d-flex align-items-center">
-                            <div class="form-check mt-3">
-                                <input class="form-check-input" type="checkbox" name="placement_willingness_req" id="modal_willing" value="1" checked>
-                                <label class="form-check-label" for="modal_willing">Willing Students Only</label>
+                        <label class="form-label small fw-bold text-dark mb-1">1. Announcement Title & Type</label>
+                        <div class="row g-2">
+                            <div class="col-md-8 col-12">
+                                <input type="text" name="title" id="modal_title" class="form-control form-control-sm" placeholder="e.g. TCS Ninja Campus Recruitment Drive 2025" required>
+                            </div>
+                            <div class="col-md-4 col-12">
+                                <select name="announcement_type" id="modal_type" class="form-select form-select-sm">
+                                    <option value="Placement Drive" selected>Placement Drive</option>
+                                    <option value="General">General Notice</option>
+                                    <option value="Training">Training Circular</option>
+                                    <option value="Test Schedule">Test Schedule</option>
+                                    <option value="Interview Schedule">Interview Schedule</option>
+                                    <option value="Deadline Reminder">Deadline Reminder</option>
+                                    <option value="Circular">College Circular</option>
+                                </select>
                             </div>
                         </div>
                     </div>
 
-                    <h6 class="fw-bold border-bottom pb-2 mb-3 mt-4">Target Departments & Batches</h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label fw-bold">Select Eligible Departments</label>
-                            <div class="p-2 border rounded" style="max-height: 120px; overflow-y: auto;">
-                                <?php foreach ($departments as $d): ?>
-                                    <div class="form-check">
-                                        <input class="form-check-input dept-chk" type="checkbox" name="departments[]" value="<?php echo $d['dept_id']; ?>" id="chk_d_<?php echo $d['dept_id']; ?>">
-                                        <label class="form-check-label" for="chk_d_<?php echo $d['dept_id']; ?>"><?php echo esc($d['dept_code']); ?></label>
-                                    </div>
-                                <?php endforeach; ?>
+                    <!-- Section 2: Company Details -->
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold text-dark mb-1">2. Company & Job Details</label>
+                        <div class="row g-2">
+                            <div class="col-md-4 col-12">
+                                <input type="text" name="company_name" id="modal_company" class="form-control form-control-sm" placeholder="Company Name (e.g. TCS)">
                             </div>
-                        </div>
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label fw-bold">Select Eligible Batches</label>
-                            <div class="p-2 border rounded" style="max-height: 120px; overflow-y: auto;">
-                                <?php foreach ($batches as $b): ?>
-                                    <div class="form-check">
-                                        <input class="form-check-input batch-chk" type="checkbox" name="batches[]" value="<?php echo $b['batch_id']; ?>" id="chk_b_<?php echo $b['batch_id']; ?>">
-                                        <label class="form-check-label" for="chk_b_<?php echo $b['batch_id']; ?>"><?php echo esc($b['batch_name']); ?></label>
-                                    </div>
-                                <?php endforeach; ?>
+                            <div class="col-md-4 col-12">
+                                <input type="text" name="job_role" id="modal_role" class="form-control form-control-sm" placeholder="Job Role (e.g. Software Engineer)">
+                            </div>
+                            <div class="col-md-2 col-6">
+                                <input type="text" name="package" id="modal_package" class="form-control form-control-sm" placeholder="CTC (e.g. 7.0 LPA)">
+                            </div>
+                            <div class="col-md-2 col-6">
+                                <input type="text" name="job_location" id="modal_location" class="form-control form-control-sm" placeholder="Location (e.g. Chennai)">
                             </div>
                         </div>
                     </div>
 
-                    <h6 class="fw-bold border-bottom pb-2 mb-3 mt-4">Google Links & Assets</h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label">Google Form Registration URL</label>
-                            <input type="url" name="google_form_url" id="modal_form_url" class="form-control" placeholder="https://docs.google.com/forms/...">
-                        </div>
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label">Google Response Sheet Link (Internal)</label>
-                            <input type="url" name="google_sheet_url" id="modal_sheet_url" class="form-control" placeholder="https://docs.google.com/spreadsheets/...">
-                            <div class="form-check mt-1">
-                                <input class="form-check-input" type="checkbox" name="is_sheet_student_visible" id="modal_sheet_visible" value="1">
-                                <label class="form-check-label small" for="modal_sheet_visible">Visible to students</label>
+                    <!-- Section 3: Description -->
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold text-dark mb-1">3. Announcement Body / Description</label>
+                        <textarea name="description" id="modal_desc" class="form-control form-control-sm" rows="3" placeholder="Provide complete circular details, interview stages, syllabus, or instructions..." required></textarea>
+                    </div>
+
+                    <!-- Section 4: Eligibility Constraints -->
+                    <div class="mb-3 p-2 bg-light rounded border">
+                        <label class="form-label small fw-bold text-dark mb-1">4. Eligibility Filter Constraints</label>
+                        <div class="row g-2 align-items-center">
+                            <div class="col-md-3 col-6">
+                                <label class="text-muted small" style="font-size: 0.72rem;">Min CGPA</label>
+                                <input type="number" step="0.01" name="min_cgpa" id="modal_cgpa" class="form-control form-control-sm" value="0.00">
+                            </div>
+                            <div class="col-md-3 col-6">
+                                <label class="text-muted small" style="font-size: 0.72rem;">Max Standing Arrears</label>
+                                <input type="number" name="max_standing_arrears" id="modal_max_arrears" class="form-control form-control-sm" value="99">
+                            </div>
+                            <div class="col-md-3 col-6">
+                                <label class="text-muted small" style="font-size: 0.72rem;">Max History Arrears</label>
+                                <input type="number" name="max_history_arrears" id="modal_max_history" class="form-control form-control-sm" value="99">
+                            </div>
+                            <div class="col-md-3 col-6 pt-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="placement_willingness_req" id="modal_willing" value="1" checked>
+                                    <label class="form-check-label small fw-semibold" for="modal_willing">Willing Only</label>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label">Upload Job Description File (PDF only)</label>
-                            <input type="file" name="jd_file" class="form-control" accept="application/pdf">
-                        </div>
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label">External Website Link</label>
-                            <input type="url" name="external_link" id="modal_external" class="form-control" placeholder="https://careers.tcs.com">
+                    <!-- Section 5: Target Departments & Batches -->
+                    <div class="mb-3">
+                        <div class="row g-2">
+                            <div class="col-md-6 col-12">
+                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                    <label class="form-label small fw-bold text-dark mb-0">Eligible Departments</label>
+                                    <button type="button" class="btn btn-link p-0 text-primary small" style="font-size:0.72rem; text-decoration:none;" onclick="$('.dept-chk').prop('checked', true)">Select All</button>
+                                </div>
+                                <div class="p-2 border rounded bg-white" style="max-height: 100px; overflow-y: auto;">
+                                    <?php foreach ($departments as $d): ?>
+                                        <div class="form-check">
+                                            <input class="form-check-input dept-chk" type="checkbox" name="departments[]" value="<?php echo $d['dept_id']; ?>" id="chk_d_<?php echo $d['dept_id']; ?>">
+                                            <label class="form-check-label small" for="chk_d_<?php echo $d['dept_id']; ?>">
+                                                <strong><?php echo esc($d['dept_code']); ?></strong> - <?php echo esc($d['dept_name']); ?>
+                                            </label>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                            <div class="col-md-6 col-12">
+                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                    <label class="form-label small fw-bold text-dark mb-0">Eligible Batches</label>
+                                    <button type="button" class="btn btn-link p-0 text-primary small" style="font-size:0.72rem; text-decoration:none;" onclick="$('.batch-chk').prop('checked', true)">Select All</button>
+                                </div>
+                                <div class="p-2 border rounded bg-white" style="max-height: 100px; overflow-y: auto;">
+                                    <?php foreach ($batches as $b): ?>
+                                        <div class="form-check">
+                                            <input class="form-check-input batch-chk" type="checkbox" name="batches[]" value="<?php echo $b['batch_id']; ?>" id="chk_b_<?php echo $b['batch_id']; ?>">
+                                            <label class="form-check-label small" for="chk_b_<?php echo $b['batch_id']; ?>">
+                                                <?php echo esc($b['batch_name']); ?>
+                                            </label>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="row mt-3">
-                        <div class="col-md-4 mb-3">
-                            <label class="form-label">Expiry / Registration Deadline</label>
-                            <input type="date" name="expiry_date" id="modal_expiry" class="form-control" required>
+                    <!-- Section 6: Links & Files -->
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold text-dark mb-1">6. Links, Forms & Job Description Attachment</label>
+                        <div class="row g-2">
+                            <div class="col-md-6 col-12">
+                                <input type="url" name="google_form_url" id="modal_form_url" class="form-control form-control-sm" placeholder="Google Form URL (https://forms.gle/...)">
+                            </div>
+                            <div class="col-md-6 col-12">
+                                <input type="url" name="google_sheet_url" id="modal_sheet_url" class="form-control form-control-sm" placeholder="Google Sheet Responses URL (Internal)">
+                                <div class="form-check mt-1">
+                                    <input class="form-check-input" type="checkbox" name="is_sheet_student_visible" id="modal_sheet_visible" value="1">
+                                    <label class="form-check-label small" for="modal_sheet_visible" style="font-size:0.72rem;">Make responses sheet link visible to students</label>
+                                </div>
+                            </div>
+                            <div class="col-md-6 col-12">
+                                <label class="text-muted small" style="font-size: 0.72rem;">Upload JD PDF Attachment</label>
+                                <input type="file" name="jd_file" class="form-control form-control-sm" accept="application/pdf">
+                            </div>
+                            <div class="col-md-6 col-12">
+                                <label class="text-muted small" style="font-size: 0.72rem;">External Careers Portal Link</label>
+                                <input type="url" name="external_link" id="modal_external" class="form-control form-control-sm" placeholder="https://careers.company.com">
+                            </div>
                         </div>
-                        <div class="col-md-4 mb-3">
-                            <label class="form-label">Priority Alert</label>
-                            <select name="priority" id="modal_priority" class="form-select">
+                    </div>
+
+                    <!-- Section 7: Deadline, Priority & Status -->
+                    <div class="row g-2">
+                        <div class="col-md-4 col-12">
+                            <label class="form-label small fw-bold text-dark mb-1">Expiry / Deadline</label>
+                            <input type="date" name="expiry_date" id="modal_expiry" class="form-control form-control-sm" required>
+                        </div>
+                        <div class="col-md-4 col-6">
+                            <label class="form-label small fw-bold text-dark mb-1">Priority Level</label>
+                            <select name="priority" id="modal_priority" class="form-select form-select-sm">
                                 <option value="Low">Low</option>
                                 <option value="Medium" selected>Medium</option>
-                                <option value="High">High</option>
+                                <option value="High">High (Urgent)</option>
                             </select>
                         </div>
-                        <div class="col-md-4 mb-3">
-                            <label class="form-label">Publishing Status</label>
-                            <select name="status" id="modal_status" class="form-select">
+                        <div class="col-md-4 col-6">
+                            <label class="form-label small fw-bold text-dark mb-1">Status</label>
+                            <select name="status" id="modal_status" class="form-select form-select-sm">
                                 <option value="published" selected>Published</option>
                                 <option value="draft">Draft</option>
                             </select>
@@ -452,27 +889,96 @@ $announcements = $stmtAnn->fetchAll();
                     </div>
                 </div>
                 
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-light border" data-bs-dismiss="modal">Close</button>
-                    <button type="submit" class="btn btn-primary" id="btnSubmitForm">Publish Announcement</button>
+                <div class="modal-footer py-2 px-3 bg-light border-top d-flex justify-content-between align-items-center">
+                    <div>
+                        <button type="button" class="btn btn-sm btn-outline-danger" id="btnDeleteAnnouncementInModal" style="display: none;" onclick="deleteAnnouncementFromEditModal()">
+                            <i class="fa-solid fa-trash-can me-1"></i> Delete Announcement
+                        </button>
+                    </div>
+                    <div class="d-flex gap-2 ms-auto">
+                        <button type="button" class="btn btn-sm btn-light border" data-bs-dismiss="modal">Close</button>
+                        <button type="submit" class="btn btn-sm btn-primary" id="btnSubmitForm">Publish Announcement</button>
+                    </div>
                 </div>
             </form>
         </div>
     </div>
 </div>
 
+<!-- 6. Quick Preview Modal -->
+<div class="modal fade" id="previewModal" tabindex="-1" aria-labelledby="previewModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content text-dark border-0 shadow">
+            <div class="modal-header py-2 px-3 bg-light border-bottom">
+                <h6 class="modal-title fw-bold" id="previewModalLabel">
+                    <i class="fa-solid fa-eye text-primary me-2"></i> Announcement Details
+                </h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-3" id="previewModalBody">
+                <!-- Injected via JS -->
+            </div>
+            <div class="modal-footer py-2 px-3 bg-light border-top d-flex justify-content-between align-items-center" id="previewModalFooter">
+                <div>
+                    <button type="button" class="btn btn-sm btn-outline-danger" id="btnDeleteFromPreview">
+                        <i class="fa-solid fa-trash-can me-1"></i> Delete Announcement
+                    </button>
+                </div>
+                <div class="d-flex gap-2 ms-auto">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btnEditFromPreview">
+                        <i class="fa-solid fa-pencil me-1"></i> Edit Notice
+                    </button>
+                    <button type="button" class="btn btn-sm btn-light border" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Hidden Announcement Deletion Form -->
+<form id="deleteAnnouncementForm" action="announcements.php<?php echo !empty($_GET['tab']) ? '?tab=' . urlencode($_GET['tab']) : ''; ?>" method="POST" style="display: none;">
+    <?php csrfInput(); ?>
+    <input type="hidden" name="action" value="delete">
+    <input type="hidden" name="announcement_id" id="delete_announcement_id" value="0">
+</form>
+
 <?php require_once(__DIR__ . '/../includes/footer.php'); ?>
 
 <script>
 $(document).ready(function() {
-    $('#annTable').DataTable({
-        "order": [[4, "asc"]],
-        "pageLength": 10
-    });
+    if ($('#annTable').length) {
+        $('#annTable').DataTable({
+            "columnDefs": [
+                { "orderable": false, "targets": 'no-sort' }
+            ],
+            "order": [[4, "asc"]],
+            "pageLength": 15,
+            "language": {
+                "search": "_INPUT_",
+                "searchPlaceholder": "Search announcements, companies, roles...",
+                "lengthMenu": "Show _MENU_ entries"
+            }
+        });
+    }
 });
 
+let currentEditAnnouncement = null;
+let currentPreviewAnnouncement = null;
+
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
 function openCreateModal() {
-    $('#annModalLabel').text('Publish Announcement');
+    currentEditAnnouncement = null;
+    $('#btnDeleteAnnouncementInModal').hide();
+    $('#annModalLabel').html('<i class="fa-solid fa-bullhorn text-primary me-2"></i> Publish Placement Announcement');
     $('#form_action').val('create');
     $('#form_announcement_id').val('0');
     
@@ -504,7 +1010,9 @@ function openCreateModal() {
 }
 
 function openEditModal(ann) {
-    $('#annModalLabel').text('Edit Announcement');
+    currentEditAnnouncement = ann;
+    $('#btnDeleteAnnouncementInModal').show();
+    $('#annModalLabel').html('<i class="fa-solid fa-pencil text-primary me-2"></i> Edit Announcement');
     $('#form_action').val('edit');
     $('#form_announcement_id').val(ann.announcement_id);
     
@@ -521,16 +1029,13 @@ function openEditModal(ann) {
     $('#modal_max_history').val(ann.max_history_arrears);
     $('#modal_willing').prop('checked', ann.placement_willingness_req == 1);
     
-    // Clear check boxes
     $('.dept-chk').prop('checked', false);
     $('.batch-chk').prop('checked', false);
     
-    // Fetch and check target mappings via AJax or parse the concatenated list.
-    // Fetching department and batch mappings from the parsed concatenation
     if (ann.target_depts) {
         ann.target_depts.split(', ').forEach(code => {
             $('.dept-chk').each(function() {
-                if ($(this).next('label').text().trim() === code) {
+                if ($(this).next('label').text().indexOf(code) !== -1) {
                     $(this).prop('checked', true);
                 }
             });
@@ -558,6 +1063,101 @@ function openEditModal(ann) {
     
     var modal = new bootstrap.Modal(document.getElementById('announcementModal'));
     modal.show();
+}
+
+function deleteAnnouncementFromEditModal() {
+    if (!currentEditAnnouncement) return;
+    const modalEl = document.getElementById('announcementModal');
+    const modalInstance = bootstrap.Modal.getInstance(modalEl);
+    if (modalInstance) {
+        modalInstance.hide();
+    }
+    confirmDeleteAnnouncement(currentEditAnnouncement.announcement_id, currentEditAnnouncement.title);
+}
+
+function openPreviewModal(ann) {
+    currentPreviewAnnouncement = ann;
+    let html = `
+        <h5 class="fw-bold text-dark mb-1">${escapeHtml(ann.title)}</h5>
+        <div class="d-flex flex-wrap gap-2 mb-3">
+            <span class="badge bg-primary-subtle text-primary border">${escapeHtml(ann.announcement_type)}</span>
+            ${ann.company_name ? `<span class="badge bg-light text-dark border">🏢 ${escapeHtml(ann.company_name)}</span>` : ''}
+            ${ann.package ? `<span class="badge bg-success-subtle text-success border">₹ ${escapeHtml(ann.package)}</span>` : ''}
+            <span class="badge bg-warning-subtle text-warning border">⏳ Deadline: ${escapeHtml(ann.expiry_date)}</span>
+        </div>
+        <div class="p-3 bg-light rounded border mb-3">
+            <h6 class="fw-bold small mb-2 text-secondary text-uppercase">Description</h6>
+            <div style="font-size: 0.88rem; white-space: pre-line;">${escapeHtml(ann.description)}</div>
+        </div>
+        <div class="row g-2 mb-3">
+            <div class="col-6">
+                <div class="p-2 border rounded bg-white">
+                    <small class="text-muted d-block">Target Departments</small>
+                    <strong class="text-primary small">${escapeHtml(ann.target_depts || 'All')}</strong>
+                </div>
+            </div>
+            <div class="col-6">
+                <div class="p-2 border rounded bg-white">
+                    <small class="text-muted d-block">Target Batches</small>
+                    <strong class="text-dark small">${escapeHtml(ann.target_batches || 'All')}</strong>
+                </div>
+            </div>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+            ${ann.google_form_url ? `<a href="${escapeHtml(ann.google_form_url)}" target="_blank" class="btn btn-sm btn-primary"><i class="fa-solid fa-square-poll-horizontal me-1"></i> Apply / Register</a>` : ''}
+            ${ann.google_sheet_url ? `<a href="${escapeHtml(ann.google_sheet_url)}" target="_blank" class="btn btn-sm btn-success"><i class="fa-solid fa-table me-1"></i> Response Sheet</a>` : ''}
+            ${ann.external_link ? `<a href="${escapeHtml(ann.external_link)}" target="_blank" class="btn btn-sm btn-outline-secondary"><i class="fa-solid fa-arrow-up-right-from-square me-1"></i> Careers Portal</a>` : ''}
+        </div>
+    `;
+    
+    $('#previewModalBody').html(html);
+
+    // Bind preview action buttons
+    $('#btnDeleteFromPreview').off('click').on('click', function() {
+        const modalEl = document.getElementById('previewModal');
+        const modalInstance = bootstrap.Modal.getInstance(modalEl);
+        if (modalInstance) {
+            modalInstance.hide();
+        }
+        confirmDeleteAnnouncement(ann.announcement_id, ann.title);
+    });
+
+    $('#btnEditFromPreview').off('click').on('click', function() {
+        const modalEl = document.getElementById('previewModal');
+        const modalInstance = bootstrap.Modal.getInstance(modalEl);
+        if (modalInstance) {
+            modalInstance.hide();
+        }
+        openEditModal(ann);
+    });
+
+    var modal = new bootstrap.Modal(document.getElementById('previewModal'));
+    modal.show();
+}
+
+function confirmDeleteAnnouncement(announcementId, title) {
+    if (typeof Swal !== 'undefined') {
+        Swal.fire({
+            title: 'Delete Announcement?',
+            html: `Are you sure you want to permanently delete <strong>${escapeHtml(title)}</strong>?<br><br><div class="alert alert-danger text-start p-2 mb-0 small"><i class="fa-solid fa-triangle-exclamation me-1"></i> <strong>Permanent Action:</strong> This announcement and any target batch/department distribution records will be removed from all student dashboards.</div>`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#dc3545',
+            cancelButtonColor: '#6c757d',
+            confirmButtonText: '<i class="fa-solid fa-trash-can me-1"></i> Yes, Delete Notice',
+            cancelButtonText: 'Cancel'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                $('#delete_announcement_id').val(announcementId);
+                $('#deleteAnnouncementForm').submit();
+            }
+        });
+    } else {
+        if (confirm(`Permanently delete announcement "${title}"? This cannot be undone.`)) {
+            $('#delete_announcement_id').val(announcementId);
+            $('#deleteAnnouncementForm').submit();
+        }
+    }
 }
 </script>
 

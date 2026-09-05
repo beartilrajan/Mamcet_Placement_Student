@@ -32,18 +32,21 @@ if (isset($_GET['action']) && $_GET['action'] === 'delete') {
 }
 
 // Fetch all Job Descriptions
+require_once(__DIR__ . '/../services/JobSeederService.php');
+JobSeederService::seedIfEmpty($db);
 $stmt = $db->query("
     SELECT jd.*, s.session_name 
     FROM job_descriptions jd
-    JOIN academic_sessions s ON jd.session_id = s.session_id
+    LEFT JOIN academic_sessions s ON jd.session_id = s.session_id
     ORDER BY jd.job_id DESC
 ");
-$jobs = $stmt->fetchAll();
+$jobs = $stmt ? $stmt->fetchAll() : [];
 ?>
 
 <?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
 
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
             <div class="d-flex justify-content-between align-items-center mb-4">
                 <h1 class="h3 mb-0 text-gray-800"><i class="fa-solid fa-file-contract text-primary"></i> Job Descriptions Database</h1>

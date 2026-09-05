@@ -103,7 +103,7 @@ if (isset($_POST['upload_resume']) && $hasConsented) {
 
         // Insert new resume record
         $stmtIns = $db->prepare("
-            INSERT INTO resume_files (student_id, original_filename, stored_filename, file_path, file_type, file_size, is_current, status) 
+            INSERT INTO resume_files (student_id, filename, stored_filename, resume_path, file_type, file_size, is_current, status) 
             VALUES (?, ?, ?, ?, ?, ?, 1, 'uploaded')
         ");
         $stmtIns->execute([$studentId, $origName, $storedName, 'assets/uploads/resumes/' . $storedName, $ext, $file['size']]);
@@ -224,6 +224,7 @@ $historyList = $stmtHist->fetchAll();
 <?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
 
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
             <h1 class="h3 mb-4 text-gray-800"><i class="fa-solid fa-file-pdf text-danger"></i> My Resumes & Documents</h1>
 
@@ -286,17 +287,17 @@ $historyList = $stmtHist->fetchAll();
                     <!-- Left: Upload Form & Text Corrector -->
                     <div class="col-lg-8">
                         <div class="card shadow mb-4">
-                            <div class="card-header py-3 bg-primary text-white d-flex justify-content-between align-items-center">
-                                <h6 class="m-0 font-weight-bold"><i class="fa-solid fa-file-arrow-up"></i> Upload New Resume Document</h6>
-                                <small>Max File Size: <?php echo $maxMb; ?>MB (PDF, DOCX)</small>
+                            <div class="card-header py-3 bg-primary text-white d-flex justify-content-between align-items-center flex-wrap gap-1">
+                                <h6 class="m-0 font-weight-bold"><i class="fa-solid fa-file-arrow-up me-1"></i> Upload New Resume Document</h6>
+                                <small class="text-white-50">Max File Size: <?php echo $maxMb; ?>MB (PDF, DOCX)</small>
                             </div>
                             <div class="card-body">
-                                <form method="POST" enctype="multipart/form-data" class="d-flex align-items-center">
-                                    <div class="flex-grow-1 me-3">
+                                <form method="POST" enctype="multipart/form-data" class="d-flex align-items-stretch flex-column flex-sm-row gap-2">
+                                    <div class="flex-grow-1">
                                         <input class="form-control" type="file" name="resume_file" accept=".pdf,.docx" required>
                                     </div>
-                                    <button type="submit" name="upload_resume" class="btn btn-primary px-4">
-                                        <i class="fa-solid fa-upload"></i> Upload
+                                    <button type="submit" name="upload_resume" class="btn btn-primary px-4 py-2 font-weight-bold btn-hover-shine shadow-sm">
+                                        <i class="fa-solid fa-cloud-arrow-up me-2"></i> Upload
                                     </button>
                                 </form>
                             </div>
@@ -306,22 +307,22 @@ $historyList = $stmtHist->fetchAll();
                         <?php if ($currentResume): ?>
                             <div class="card shadow mb-4">
                                 <div class="card-header py-3 bg-dark text-white">
-                                    <h6 class="m-0 font-weight-bold"><i class="fa-solid fa-align-left"></i> Extracted Resume Text (Editable Corrector)</h6>
+                                    <h6 class="m-0 font-weight-bold"><i class="fa-solid fa-align-left me-2"></i> Extracted Resume Text (Editable Corrector)</h6>
                                 </div>
                                 <div class="card-body">
-                                    <p class="text-muted"><i class="fa-solid fa-circle-question"></i> Verify and correct the text below if any formatting or characters were parsed incorrectly. This text is used for ATS analysis.</p>
+                                    <p class="text-muted small"><i class="fa-solid fa-circle-question me-1"></i> Verify and correct the text below if any formatting or characters were parsed incorrectly. This text is used for ATS analysis.</p>
                                     <form method="POST">
                                         <input type="hidden" name="resume_id" value="<?php echo $currentResume['resume_id']; ?>">
                                         <div class="mb-3">
-                                            <textarea class="form-control font-monospace" name="extracted_text_content" rows="12" style="font-size:0.85rem;" required><?php echo htmlspecialchars($currentResume['extracted_text'] ?? ''); ?></textarea>
+                                            <textarea class="form-control font-monospace" name="extracted_text_content" rows="10" style="font-size:0.85rem;" required><?php echo htmlspecialchars($currentResume['extracted_text'] ?? ''); ?></textarea>
                                         </div>
-                                        <div class="d-flex justify-content-between align-items-center">
-                                            <button type="submit" name="save_extracted_text" class="btn btn-success font-weight-bold">
-                                                <i class="fa-solid fa-circle-check"></i> Verify & Enable ATS Analysis
+                                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                                            <button type="submit" name="save_extracted_text" class="btn btn-success font-weight-bold px-3 py-2 btn-hover-shine shadow-sm">
+                                                <i class="fa-solid fa-circle-check me-1"></i> Verify & Enable ATS Analysis
                                             </button>
                                             <?php if ($currentResume['status'] === 'ready'): ?>
-                                                <a href="ats-analysis.php" class="btn btn-info font-weight-bold text-white">
-                                                    <i class="fa-solid fa-chart-line"></i> Run ATS Analysis <i class="fa-solid fa-arrow-right"></i>
+                                                <a href="ats-analysis.php" class="btn btn-info font-weight-bold text-white px-3 py-2 btn-hover-shine shadow-sm">
+                                                    <i class="fa-solid fa-chart-line me-1"></i> Run ATS Analysis <i class="fa-solid fa-arrow-right ms-1"></i>
                                                 </a>
                                             <?php endif; ?>
                                         </div>
@@ -330,10 +331,10 @@ $historyList = $stmtHist->fetchAll();
                             </div>
                         <?php else: ?>
                             <div class="card shadow mb-4">
-                                <div class="card-body text-center py-5 text-muted">
-                                    <i class="fa-solid fa-folder-open fa-3x mb-3 text-gray-300"></i>
-                                    <h5>No Active Resume Found</h5>
-                                    <p>Please upload a text-based PDF or DOCX file to configure your placement profile.</p>
+                                <div class="card-body text-center py-4 py-md-5 text-muted px-3">
+                                    <i class="fa-solid fa-folder-open fa-3x mb-3 text-secondary opacity-50"></i>
+                                    <h5 class="fw-bold text-dark mb-1">No Active Resume Found</h5>
+                                    <p class="small text-muted mb-0">Please upload a text-based PDF or DOCX file to configure your placement profile.</p>
                                 </div>
                             </div>
                         <?php endif; ?>
@@ -344,16 +345,16 @@ $historyList = $stmtHist->fetchAll();
                         <!-- Preferences Card -->
                         <div class="card shadow mb-4">
                             <div class="card-header py-3 bg-secondary text-white">
-                                <h6 class="m-0 font-weight-bold"><i class="fa-solid fa-user-lock"></i> Visibility Preferences</h6>
+                                <h6 class="m-0 font-weight-bold"><i class="fa-solid fa-user-lock me-2"></i> Visibility Preferences</h6>
                             </div>
                             <div class="card-body">
                                 <form method="POST">
                                     <div class="form-check form-switch mb-3">
                                         <input class="form-check-input" type="checkbox" name="officer_visibility" id="officerVisibilityToggle" <?php echo $officerVisibility ? 'checked' : ''; ?>>
-                                        <label class="form-check-label" for="officerVisibilityToggle">Officers can view ATS reports</label>
+                                        <label class="form-check-label small fw-semibold text-dark" for="officerVisibilityToggle">Officers can view ATS reports</label>
                                     </div>
-                                    <button type="submit" name="update_visibility" class="btn btn-sm btn-secondary font-weight-bold">
-                                        Save Options
+                                    <button type="submit" name="update_visibility" class="btn btn-sm btn-primary font-weight-bold px-3 py-2 btn-hover-shine shadow-sm">
+                                        <i class="fa-solid fa-floppy-disk me-1"></i> Save Options
                                     </button>
                                 </form>
                             </div>
@@ -372,8 +373,8 @@ $historyList = $stmtHist->fetchAll();
                                         <?php foreach ($historyList as $hist): ?>
                                             <li class="list-group-item d-flex justify-content-between align-items-center py-3">
                                                 <div style="line-height:1.2; max-width: 70%;">
-                                                    <span class="d-block text-truncate font-weight-bold text-dark" style="font-size:0.85rem;" title="<?php echo htmlspecialchars($hist['original_filename']); ?>">
-                                                        <?php echo htmlspecialchars($hist['original_filename']); ?>
+                                                    <span class="d-block text-truncate font-weight-bold text-dark" style="font-size:0.85rem;" title="<?php echo htmlspecialchars($hist['filename']); ?>">
+                                                        <?php echo htmlspecialchars($hist['filename']); ?>
                                                     </span>
                                                     <small class="text-muted" style="font-size:0.75rem;">
                                                         Uploaded: <?php echo date('d M, h:i A', strtotime($hist['uploaded_at'])); ?>

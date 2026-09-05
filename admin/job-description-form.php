@@ -1,12 +1,12 @@
 <?php
 // MAMCET Placement & Learning Portal - Create/Edit Job Description Form
-require_once(__DIR__ . '/../includes/header.php');
+require_once(__DIR__ . '/../includes/auth.php');
+require_once(__DIR__ . '/../includes/csrf.php');
+require_once(__DIR__ . '/../includes/functions.php');
+require_once(__DIR__ . '/../config/database.php');
 
 // Restrict to Officer / Admin
-if ($roleId !== ROLE_PLACEMENT_OFFICER && $roleId !== ROLE_SUPER_ADMIN) {
-    header("Location: " . $baseDir . "index.php");
-    exit;
-}
+requireRole([ROLE_PLACEMENT_OFFICER, ROLE_SUPER_ADMIN]);
 
 $db = Database::getInstance()->getConnection();
 $message = '';
@@ -132,11 +132,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = $e->getMessage();
     }
 }
+
+$pageTitle = $jobId > 0 ? 'Edit Job Description' : 'Create Job Description';
+require_once(__DIR__ . '/../includes/header.php');
+require_once(__DIR__ . '/../includes/sidebar.php');
 ?>
 
-<?php require_once(__DIR__ . '/../includes/sidebar.php'); ?>
-
 <div class="main-content">
+    <?php require_once(__DIR__ . '/../includes/topbar.php'); ?>
     <div class="container-fluid py-4">
             <h1 class="h3 mb-4 text-gray-800">
                 <i class="fa-solid fa-file-contract text-primary"></i> 
